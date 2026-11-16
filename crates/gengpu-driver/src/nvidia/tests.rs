@@ -41,6 +41,7 @@ struct MockState {
     allocation_calls: usize,
     free_calls: usize,
     allocation_error: Option<CudaError>,
+    allocation_address: Option<u64>,
     free_error: Option<CudaError>,
     free_error_remaining: usize,
     allocated_addresses: Vec<u64>,
@@ -183,7 +184,9 @@ impl CudaApi for MockCudaApi {
         if let Some(error) = &state.allocation_error {
             return Err(error.clone());
         }
-        let address = 0x10000 + (state.allocation_calls as u64 * 0x1000) + size_bytes as u64;
+        let address = state.allocation_address.unwrap_or_else(|| {
+            0x10000 + (state.allocation_calls as u64 * 0x1000) + size_bytes as u64
+        });
         state.allocated_addresses.push(address);
         state.device_buffers.push((address, vec![0; size_bytes]));
         Ok(address)
@@ -1244,6 +1247,31 @@ fn deallocated_memory_cannot_be_used_for_transfers() {
         .unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::InvalidState);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.copy_to_device_calls, 0);
+    assert_eq!(state.synchronize_calls, 0);
+}
+
+
+#[test]
+fn transfer_rejects_device_address_overflow_before_cuda_copy() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        allocation_address: Some(u64::MAX - 3),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(8).unwrap();
+
+    let error = context
+        .copy_to_device(&mut allocation, 4, &[1])
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     let state = api.state.lock().unwrap();
     assert_eq!(state.copy_to_device_calls, 0);
     assert_eq!(state.synchronize_calls, 0);
