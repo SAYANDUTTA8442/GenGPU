@@ -1252,7 +1252,6 @@ fn deallocated_memory_cannot_be_used_for_transfers() {
     assert_eq!(state.synchronize_calls, 0);
 }
 
-
 #[test]
 fn transfer_rejects_device_address_overflow_before_cuda_copy() {
     let (driver, api) = driver_with_mock(MockState {
