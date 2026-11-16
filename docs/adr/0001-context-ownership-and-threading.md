@@ -53,14 +53,19 @@ This option is selected.
   for its lifetime. The backend implementation will use shared ownership
   where needed so dropping the Driver value cannot invalidate a live context.
 - The backend-neutral Context trait is Send but not Sync.
-- CurrentContextGuard is neither Send nor Sync and is bound to its creating
-  thread.
+- CurrentContextGuard<'a> is neither Send nor Sync, is bound to its creating
+  thread, and holds an exclusive mutable borrow of the associated Context for
+  its lifetime. This makes closing or mutably reusing that context while the
+  guard is alive a compile-time error.
 - Making a context current is scoped. Finishing or dropping the guard restores
-  the previously current context.
+  the previously current context. The NVIDIA backend uses CUDA push/pop calls
+  and verifies the popped native handle before considering cleanup successful.
 - If explicit guard cleanup fails, its cleanup state remains available for a
   best-effort retry during Drop.
 - Synchronization temporarily activates the context as needed and restores
-  the previous current-context state before returning.
+  the previous current-context state before returning. If synchronization and
+  restoration both fail, the synchronization failure remains the primary
+  diagnostic and the restoration failure is appended.
 - Explicit close reports destruction errors and retains enough state for a
   retry. Dropping an open context performs best-effort cleanup and must not
   panic.
@@ -84,7 +89,10 @@ Costs and limitations:
 - Drop cannot report cleanup failures; callers requiring error visibility
   must use explicit close or guard finish.
 - Backend implementations must carefully preserve thread-local context
-  state on every success and failure path.
+  state on every success and failure path. The lifetime-bound guard prevents
+  conflicting operations through the same Context value while it is active,
+  but cannot prevent unrelated external CUDA calls from mutating that host
+  thread's context stack.
 
 Follow-up:
 
