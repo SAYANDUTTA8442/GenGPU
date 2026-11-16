@@ -1697,7 +1697,7 @@ fn invalid_ptx_is_rejected_before_nvidia_context_activation() {
         .err()
         .expect("empty PTX must be rejected");
     let embedded_nul = context
-        .load_ptx(".version 7.0\\0.target sm_50")
+        .load_ptx(".version 7.0\0.target sm_50")
         .err()
         .expect("embedded NUL must be rejected");
 
