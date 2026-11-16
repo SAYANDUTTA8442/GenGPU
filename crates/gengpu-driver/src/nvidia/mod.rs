@@ -7,6 +7,7 @@ mod api;
 mod context;
 mod driver;
 mod loader;
+mod module;
 
 pub use driver::NvidiaDriver;
 
