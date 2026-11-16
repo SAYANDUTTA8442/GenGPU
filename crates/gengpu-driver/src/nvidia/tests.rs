@@ -1658,3 +1658,31 @@ fn successful_module_unload_is_not_repeated_after_context_restore_failure() {
     assert_eq!(state.unloaded_modules.len(), 1);
     assert!(state.context_stack.is_empty());
 }
+
+#[test]
+fn module_load_and_function_lookup_preserve_an_existing_current_context() {
+    let (driver, api) = initialized_driver();
+    let mut previous_context = driver.create_context(DeviceId::new(0)).unwrap();
+    let previous_guard = previous_context.make_current().unwrap();
+    let previous_handle = *api.state.lock().unwrap().context_stack.last().unwrap();
+
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+    let function = module.get_function("kernel_entry").unwrap();
+    drop(function);
+
+    assert_eq!(
+        api.state.lock().unwrap().context_stack,
+        vec![previous_handle]
+    );
+
+    module.unload().unwrap();
+    assert_eq!(
+        api.state.lock().unwrap().context_stack,
+        vec![previous_handle]
+    );
+    previous_guard.finish().unwrap();
+    assert!(api.state.lock().unwrap().context_stack.is_empty());
+}
