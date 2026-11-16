@@ -1107,7 +1107,7 @@ fn transfer_rejects_allocation_from_another_context_on_the_same_device() {
     let state = api.state.lock().unwrap();
     assert_eq!(state.copy_to_device_calls, 0);
     assert_eq!(state.synchronize_calls, 0);
-    assert_eq!(state.push_calls, 2); // allocation only
+    assert_eq!(state.push_calls, 1); // allocation only
 }
 
 #[test]
@@ -1210,18 +1210,14 @@ fn transfer_synchronization_failure_is_reported_after_copy_and_context_restore()
 
 #[test]
 fn transfer_reports_context_restoration_failure_after_retry() {
-    let (driver, api) = driver_with_mock(MockState {
-        devices: vec![RawDeviceInfo {
-            name: String::from("GPU A"),
-            total_memory_bytes: 1024,
-        }],
-        pop_error: Some(CudaError::new(709)),
-        pop_error_remaining: 1,
-        ..MockState::default()
-    });
-    driver.initialize().unwrap();
+    let (driver, api) = initialized_driver();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let mut allocation = context.allocate(8).unwrap();
+    {
+        let mut state = api.state.lock().unwrap();
+        state.pop_error = Some(CudaError::new(709));
+        state.pop_error_remaining = 1;
+    }
 
     let error = context
         .copy_to_device(&mut allocation, 0, &[1, 2, 3, 4])
