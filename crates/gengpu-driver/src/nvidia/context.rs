@@ -37,7 +37,12 @@ impl ContextInner {
     fn handle(&self) -> Result<usize> {
         self.handle
             .lock()
-            .map_err(|_| Error::new(ErrorKind::Internal, "NVIDIA context handle mutex is poisoned"))?
+            .map_err(|_| {
+                Error::new(
+                    ErrorKind::Internal,
+                    "NVIDIA context handle mutex is poisoned",
+                )
+            })?
             .ok_or_else(|| Error::new(ErrorKind::InvalidState, "NVIDIA context is already closed"))
     }
 
@@ -50,7 +55,10 @@ impl ContextInner {
         }
 
         let mut handle = self.handle.lock().map_err(|_| {
-            Error::new(ErrorKind::Internal, "NVIDIA context handle mutex is poisoned")
+            Error::new(
+                ErrorKind::Internal,
+                "NVIDIA context handle mutex is poisoned",
+            )
         })?;
         let Some(native_handle) = *handle else {
             return Ok(());
@@ -174,7 +182,11 @@ impl Context for NvidiaContext {
             (Ok(address), Ok(())) => address,
             (Err(error), Ok(())) => return Err(error),
             (Err(error), Err(restore_error)) => {
-                return Err(combine_errors(error, restore_error, "restoring context after allocation"));
+                return Err(combine_errors(
+                    error,
+                    restore_error,
+                    "restoring context after allocation",
+                ));
             }
             (Ok(address), Err(restore_error)) => {
                 let cleanup = cleanup_unreturned_allocation(&self.inner, handle, address);
@@ -236,17 +248,16 @@ fn pop_expected_context(api: &Arc<dyn CudaApi>, expected: usize) -> Result<()> {
 
     let mismatch = Error::new(
         ErrorKind::InvalidState,
-        format!(
-            "cuCtxPopCurrent_v2 returned context handle {popped:#x}, expected {expected:#x}"
-        ),
+        format!("cuCtxPopCurrent_v2 returned context handle {popped:#x}, expected {expected:#x}"),
     );
     if popped != 0 {
-        api.push_current(popped)
-            .map_err(|error| combine_errors(
+        api.push_current(popped).map_err(|error| {
+            combine_errors(
                 mismatch.clone(),
                 cuda_error("cuCtxPushCurrent_v2", error),
                 "restoring the unexpected context",
-            ))?;
+            )
+        })?;
     }
     Err(mismatch)
 }
