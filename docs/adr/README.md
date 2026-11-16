@@ -62,4 +62,4 @@ Distinguish facts from assumptions. Cite external specifications or documentatio
 
 ## Current records
 
-No architecture decisions have been formally recorded in this directory yet. The product specification lists candidate topics; those topics should become ADRs only after their alternatives and rationale have been examined and the decisions have been approved.
+- [ADR-0001: Context Ownership and Threading](0001-context-ownership-and-threading.md) — Accepted. Defines context ownership, backend lifetime, scoped current-context behavior, and initial thread-safety constraints.
