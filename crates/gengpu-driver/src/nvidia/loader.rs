@@ -25,8 +25,10 @@ type CuCtxDestroy = unsafe extern "C" fn(context: CuContext) -> CuResult;
 type CuCtxPopCurrent = unsafe extern "C" fn(context: *mut CuContext) -> CuResult;
 type CuCtxPushCurrent = unsafe extern "C" fn(context: CuContext) -> CuResult;
 type CuCtxSynchronize = unsafe extern "C" fn() -> CuResult;
-type CuMemcpyHtoD = unsafe extern "C" fn(destination: u64, source: *const c_void, bytesize: usize) -> CuResult;
-type CuMemcpyDtoH = unsafe extern "C" fn(destination: *mut c_void, source: u64, bytesize: usize) -> CuResult;
+type CuMemcpyHtoD =
+    unsafe extern "C" fn(destination: u64, source: *const c_void, bytesize: usize) -> CuResult;
+type CuMemcpyDtoH =
+    unsafe extern "C" fn(destination: *mut c_void, source: u64, bytesize: usize) -> CuResult;
 type CuMemAlloc = unsafe extern "C" fn(address: *mut u64, bytesize: usize) -> CuResult;
 type CuMemFree = unsafe extern "C" fn(address: u64) -> CuResult;
 type CuGetErrorName = unsafe extern "C" fn(error: CuResult, name: *mut *const c_char) -> CuResult;
@@ -87,10 +89,8 @@ impl DynamicCudaApi {
             required_symbol::<CuCtxPushCurrent>(&library, b"cuCtxPushCurrent_v2\0")?;
         let cu_ctx_synchronize =
             required_symbol::<CuCtxSynchronize>(&library, b"cuCtxSynchronize\0")?;
-        let cu_memcpy_htod =
-            required_symbol::<CuMemcpyHtoD>(&library, b"cuMemcpyHtoD_v2\0")?;
-        let cu_memcpy_dtoh =
-            required_symbol::<CuMemcpyDtoH>(&library, b"cuMemcpyDtoH_v2\0")?;
+        let cu_memcpy_htod = required_symbol::<CuMemcpyHtoD>(&library, b"cuMemcpyHtoD_v2\0")?;
+        let cu_memcpy_dtoh = required_symbol::<CuMemcpyDtoH>(&library, b"cuMemcpyDtoH_v2\0")?;
 
         let cu_mem_alloc = required_symbol::<CuMemAlloc>(&library, b"cuMemAlloc_v2\0")?;
         let cu_mem_free = required_symbol::<CuMemFree>(&library, b"cuMemFree_v2\0")?;
@@ -291,9 +291,7 @@ impl CudaApi for DynamicCudaApi {
     }
 
     fn copy_to_device(&self, address: u64, source: &[u8]) -> std::result::Result<(), CudaError> {
-        self.check(unsafe {
-            (self.cu_memcpy_htod)(address, source.as_ptr().cast(), source.len())
-        })
+        self.check(unsafe { (self.cu_memcpy_htod)(address, source.as_ptr().cast(), source.len()) })
     }
 
     fn copy_from_device(
