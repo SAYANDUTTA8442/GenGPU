@@ -2,14 +2,15 @@
 
 ## Status
 
-Approved design; interface contract introduced in PH1-002.
+Approved design; driver and context contracts introduced in PH1-002 and
+PH1-004B.
 
 ## Purpose
 
 The driver crate isolates backend-specific GPU APIs from the GenGPU runtime.
-The runtime consumes the backend-neutral gengpu_driver::Driver interface
-and shared types from gengpu-core. It must not depend on CUDA handles,
-CUDA error codes, or NVIDIA loader details.
+The runtime consumes the backend-neutral `gengpu_driver::Driver` and
+`gengpu_driver::Context` interfaces and shared types from gengpu-core. It
+must not depend on CUDA handles, CUDA error codes, or NVIDIA loader details.
 
 ## Dependency direction
 
@@ -46,30 +47,59 @@ for the initial runtime-driver boundary.
 
 The driver crate exposes:
 
-- Driver::initialize(&self) -> Result<()>
-- Driver::enumerate_devices(&self) -> Result<Vec<DeviceInfo>>
+- `Driver::initialize(&self) -> Result<()>`
+- `Driver::enumerate_devices(&self) -> Result<Vec<DeviceInfo>>`
+- `Driver::create_context(&self, DeviceId) -> Result<Box<dyn Context>>`
+- `Context::device_id(&self) -> DeviceId`
+- `Context::make_current(&mut self) -> Result<CurrentContextGuard<'_>>`
+- `Context::synchronize(&mut self) -> Result<()>`
+- `Context::close(&mut self) -> Result<()>`
 
-The contract uses only gengpu-core types. CUDA-specific types are not
-permitted in its signatures.
+The contract uses only gengpu-core types and GenGPU-owned abstractions.
+CUDA-specific types are not permitted in its signatures.
 
-## Lifecycle and ownership
+## Context ownership and lifecycle
+
+- Context creation is explicit and is not part of device enumeration.
+- A context is an owned resource associated with one logical DeviceId.
+- A context retains the backend resources required for its lifetime.
+- Context is Send but not Sync: it may move between threads but cannot be
+  shared concurrently through the public abstraction.
+- A CurrentContextGuard is neither Send nor Sync and is bound to the thread
+  on which it was created.
+- make_current establishes a scoped current-context association. Finishing
+  or dropping the guard restores the thread's previous current-context state.
+- If explicit guard cleanup fails, the guard retains its cleanup callback
+  until Drop makes a best-effort retry.
+- synchronize must temporarily activate the context when necessary and
+  restore the caller's previous current-context state before returning.
+- close explicitly destroys the context. On failure, implementations retain
+  ownership state so destruction can be retried.
+- Dropping an open context performs best-effort destruction and must not panic.
+- A closed context rejects subsequent operations with ErrorKind::InvalidState.
+
+The public contract deliberately does not promise that a context is current
+outside a guard's lifetime. Native context handles remain private to the
+backend.
+
+## Driver lifecycle and ownership
 
 - A caller owns an explicit driver instance; GenGPU does not expose a global
   mutable driver singleton.
 - The concrete backend owns its loader state and resolved function pointers.
 - Initialization is idempotent for the same driver instance.
-- Device enumeration is valid only after successful initialization.
-- Enumeration before successful initialization returns
+- Device enumeration and context creation are valid only after successful
+  initialization.
+- Enumeration or context creation before successful initialization returns
   ErrorKind::InvalidState.
-- The trait deliberately does not promise Send or Sync. Thread-safety
-  requirements will be decided when context and concurrency semantics are
-  designed.
-- Native resource and context lifetimes are outside this interface for now;
-  they will be specified before context management is implemented.
+- The Driver trait deliberately does not promise Send or Sync. Thread-safety
+  requirements for concrete drivers are implementation-specific.
+- A context must retain the backend state it needs independently of the
+  lifetime of the Driver value that created it.
 
 The trait uses shared references to permit implementations to manage
-initialization state internally. Concrete implementations are responsible for
-the synchronization needed to uphold the idempotence contract.
+initialization state internally. Concrete implementations are responsible
+for the synchronization needed to uphold the idempotence contract.
 
 ## Device identity
 
@@ -81,7 +111,7 @@ enumeration changes.
 
 ## Error translation
 
-The NVIDIA backend translates native failures into gengpu_core::Error
+The NVIDIA backend translates native failures into gengpu-core::Error
 at the backend boundary. Driver failures use ErrorKind::Driver; invalid
 lifecycle calls use ErrorKind::InvalidState.
 
@@ -104,17 +134,11 @@ Building GenGPU should not require the CUDA toolkit or link against the CUDA
 driver library at build time. Missing libraries and missing required symbols
 must become controlled GenGPU errors.
 
-The loader implementation, symbol resolution, and actual CUDA calls are
-explicitly deferred to a later implementation subphase.
-
 ## Scope exclusions
 
 This boundary does not implement:
 
-- CUDA Driver API calls or bindings;
-- dynamic library loading or symbol resolution;
-- GPU detection or device enumeration against hardware;
-- CUDA contexts or context ownership;
+- NVIDIA context creation or CUDA context API calls;
 - device memory, transfers, streams, or events;
 - PTX module loading or kernel launch;
 - compiler integration.

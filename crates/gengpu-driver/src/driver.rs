@@ -1,6 +1,8 @@
 //! Backend-neutral driver interface.
 
-use gengpu_core::{DeviceInfo, Result};
+use gengpu_core::{DeviceId, DeviceInfo, Result};
+
+use crate::context::Context;
 
 /// Interface implemented by a concrete GPU driver backend.
 ///
@@ -29,4 +31,17 @@ pub trait Driver {
     /// Returns an error with kind InvalidState if initialization has not
     /// completed successfully, or a backend error if enumeration fails.
     fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>>;
+
+    /// Creates an owned execution context for a previously enumerated device.
+    ///
+    /// Context creation is explicit and does not occur during device
+    /// enumeration. The returned context retains the backend resources needed
+    /// for its lifetime, even if this driver value is dropped.
+    ///
+    /// # Errors
+    ///
+    /// Returns InvalidState if the driver has not been initialized,
+    /// NotFound if the logical device is not available, or a backend error if
+    /// context creation fails.
+    fn create_context(&self, device: DeviceId) -> Result<Box<dyn Context>>;
 }
