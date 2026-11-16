@@ -25,6 +25,8 @@ type CuCtxDestroy = unsafe extern "C" fn(context: CuContext) -> CuResult;
 type CuCtxPopCurrent = unsafe extern "C" fn(context: *mut CuContext) -> CuResult;
 type CuCtxPushCurrent = unsafe extern "C" fn(context: CuContext) -> CuResult;
 type CuCtxSynchronize = unsafe extern "C" fn() -> CuResult;
+type CuMemAlloc = unsafe extern "C" fn(address: *mut u64, bytesize: usize) -> CuResult;
+type CuMemFree = unsafe extern "C" fn(address: u64) -> CuResult;
 type CuGetErrorName = unsafe extern "C" fn(error: CuResult, name: *mut *const c_char) -> CuResult;
 type CuGetErrorString =
     unsafe extern "C" fn(error: CuResult, description: *mut *const c_char) -> CuResult;
@@ -45,6 +47,8 @@ struct DynamicCudaApi {
     cu_ctx_pop_current: CuCtxPopCurrent,
     cu_ctx_push_current: CuCtxPushCurrent,
     cu_ctx_synchronize: CuCtxSynchronize,
+    cu_mem_alloc: CuMemAlloc,
+    cu_mem_free: CuMemFree,
     cu_get_error_name: Option<CuGetErrorName>,
     cu_get_error_string: Option<CuGetErrorString>,
 }
@@ -80,6 +84,9 @@ impl DynamicCudaApi {
         let cu_ctx_synchronize =
             required_symbol::<CuCtxSynchronize>(&library, b"cuCtxSynchronize\0")?;
 
+        let cu_mem_alloc = required_symbol::<CuMemAlloc>(&library, b"cuMemAlloc_v2\0")?;
+        let cu_mem_free = required_symbol::<CuMemFree>(&library, b"cuMemFree_v2\0")?;
+
         // Error-description helpers improve diagnostics but are not required
         // for correct operation of the backend.
         let cu_get_error_name = optional_symbol::<CuGetErrorName>(&library, b"cuGetErrorName\0");
@@ -99,6 +106,8 @@ impl DynamicCudaApi {
             cu_ctx_pop_current,
             cu_ctx_push_current,
             cu_ctx_synchronize,
+            cu_mem_alloc,
+            cu_mem_free,
             cu_get_error_name,
             cu_get_error_string,
         })
@@ -269,6 +278,16 @@ impl CudaApi for DynamicCudaApi {
 
     fn synchronize(&self) -> std::result::Result<(), CudaError> {
         self.check(unsafe { (self.cu_ctx_synchronize)() })
+    }
+
+    fn allocate_memory(&self, size_bytes: usize) -> std::result::Result<u64, CudaError> {
+        let mut address = 0_u64;
+        self.check(unsafe { (self.cu_mem_alloc)(&mut address, size_bytes) })?;
+        Ok(address)
+    }
+
+    fn free_memory(&self, address: u64) -> std::result::Result<(), CudaError> {
+        self.check(unsafe { (self.cu_mem_free)(address) })
     }
 }
 
