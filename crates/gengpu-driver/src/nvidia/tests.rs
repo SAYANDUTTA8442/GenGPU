@@ -1538,7 +1538,7 @@ fn ptx_module_load_does_not_call_cuda_when_context_push_fails() {
     let context = driver.create_context(DeviceId::new(0)).unwrap();
 
     let error = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .err()
         .expect("context push failure must be returned");
 
@@ -1563,7 +1563,7 @@ fn missing_function_error_remains_primary_when_context_restoration_fails() {
     driver.initialize().unwrap();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
     {
         let mut state = api.state.lock().unwrap();
