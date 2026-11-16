@@ -10,11 +10,7 @@ pub(super) struct CudaError {
 
 impl CudaError {
     pub fn new(code: i32) -> Self {
-        Self {
-            code,
-            name: None,
-            description: None,
-        }
+        Self { code, name: None, description: None }
     }
 }
 
@@ -34,6 +30,8 @@ pub(super) trait CudaApi: Send + Sync {
     fn driver_version(&self) -> std::result::Result<i32, CudaError>;
     fn device_count(&self) -> std::result::Result<i32, CudaError>;
     fn device_info(&self, ordinal: i32) -> std::result::Result<RawDeviceInfo, CudaError>;
+    fn create_context(&self, ordinal: i32) -> std::result::Result<usize, CudaError>;
+    fn destroy_context(&self, handle: usize) -> std::result::Result<(), CudaError>;
 }
 
 /// Loads an implementation of the private CUDA API.

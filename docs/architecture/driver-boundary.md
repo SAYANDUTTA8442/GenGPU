@@ -3,7 +3,7 @@
 ## Status
 
 Approved design; driver and context contracts introduced in PH1-002 and
-PH1-004B.
+PH1-004B. NVIDIA context creation and destruction implemented in PH1-004C.
 
 ## Purpose
 
@@ -67,20 +67,17 @@ CUDA-specific types are not permitted in its signatures.
   shared concurrently through the public abstraction.
 - A CurrentContextGuard is neither Send nor Sync and is bound to the thread
   on which it was created.
-- make_current establishes a scoped current-context association. Finishing
-  or dropping the guard restores the thread's previous current-context state.
-- If explicit guard cleanup fails, the guard retains its cleanup callback
-  until Drop makes a best-effort retry.
-- synchronize must temporarily activate the context when necessary and
-  restore the caller's previous current-context state before returning.
-- close explicitly destroys the context. On failure, implementations retain
-  ownership state so destruction can be retried.
-- Dropping an open context performs best-effort destruction and must not panic.
-- A closed context rejects subsequent operations with ErrorKind::InvalidState.
-
-The public contract deliberately does not promise that a context is current
-outside a guard's lifetime. Native context handles remain private to the
-backend.
+- NVIDIA context creation validates the logical device against the current
+  device count, creates the CUDA context, and immediately pops the newly
+  created context from the calling thread's current-context stack.
+- The NVIDIA context owns the native handle and a shared reference to the
+  loaded CUDA API, so it can outlive the NvidiaDriver value.
+- Explicit close reports CUDA destruction errors and retains the handle on
+  failure so the caller can retry. Drop performs best-effort destruction.
+- A closed context rejects operations that require a live native context
+  with ErrorKind::InvalidState.
+- Current-context activation and synchronization are not implemented yet;
+  they are the next context subphase, PH1-004D.
 
 ## Driver lifecycle and ownership
 
@@ -138,7 +135,8 @@ must become controlled GenGPU errors.
 
 This boundary does not implement:
 
-- NVIDIA context creation or CUDA context API calls;
+- current-context push/pop operations for ordinary caller use;
+- synchronization;
 - device memory, transfers, streams, or events;
 - PTX module loading or kernel launch;
 - compiler integration.

@@ -1,10 +1,11 @@
 //! Public NVIDIA driver implementation and lifecycle management.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use gengpu_core::{DeviceId, DeviceInfo, Error, ErrorKind, Result};
 
 use super::api::{CudaApi, CudaError, CudaLoader};
+use super::context::NvidiaContext;
 use super::loader::DynamicCudaLoader;
 
 /// NVIDIA GPU driver backed by the CUDA Driver API.
@@ -19,7 +20,7 @@ pub struct NvidiaDriver {
 
 #[derive(Default)]
 pub(super) struct DriverState {
-    api: Option<Box<dyn CudaApi>>,
+    api: Option<Arc<dyn CudaApi>>,
     driver_version: Option<i32>,
 }
 
@@ -80,18 +81,20 @@ impl super::super::Driver for NvidiaDriver {
             .map_err(|error| cuda_error("cuDriverGetVersion", error))?;
 
         state.driver_version = Some(driver_version);
-        state.api = Some(api);
+        state.api = Some(Arc::from(api));
         Ok(())
     }
 
     fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
-        let state = self.lock_state()?;
-        let api = state.api.as_ref().ok_or_else(|| {
-            Error::new(
-                ErrorKind::InvalidState,
-                "NVIDIA driver must be initialized before device enumeration",
-            )
-        })?;
+        let api = {
+            let state = self.lock_state()?;
+            state.api.clone().ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidState,
+                    "NVIDIA driver must be initialized before device enumeration",
+                )
+            })?
+        };
 
         let count = api
             .device_count()
@@ -119,9 +122,47 @@ impl super::super::Driver for NvidiaDriver {
 
         Ok(devices)
     }
+
+    fn create_context(&self, device: DeviceId) -> Result<Box<dyn crate::Context>> {
+        let api = {
+            let state = self.lock_state()?;
+            state.api.clone().ok_or_else(|| {
+                Error::new(
+                    ErrorKind::InvalidState,
+                    "NVIDIA driver must be initialized before context creation",
+                )
+            })?
+        };
+
+        let count = api
+            .device_count()
+            .map_err(|error| cuda_error("cuDeviceGetCount", error))?;
+        if count < 0 {
+            return Err(Error::new(
+                ErrorKind::Driver,
+                format!("cuDeviceGetCount returned an invalid negative device count: {count}"),
+            ));
+        }
+
+        let ordinal = i32::try_from(device.index()).map_err(|_| {
+            Error::new(ErrorKind::NotFound, "logical NVIDIA device ID is out of range")
+        })?;
+        if ordinal >= count {
+            return Err(Error::new(
+                ErrorKind::NotFound,
+                format!("logical NVIDIA device {} is not available", device.index()),
+            ));
+        }
+
+        let handle = api
+            .create_context(ordinal)
+            .map_err(|error| cuda_error("context creation", error))?;
+
+        Ok(Box::new(NvidiaContext::new(api, handle, device)))
+    }
 }
 
-fn cuda_error(operation: &str, error: CudaError) -> Error {
+pub(super) fn cuda_error(operation: &str, error: CudaError) -> Error {
     let mut message = format!("{operation} failed with CUDA error code {}", error.code);
 
     if let Some(name) = error.name {

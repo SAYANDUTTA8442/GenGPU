@@ -1,6 +1,6 @@
 //! Runtime loading and private CUDA Driver API function table.
 
-use std::ffi::{c_char, c_int, c_uint, CStr};
+use std::ffi::{c_char, c_int, c_uint, c_void, CStr};
 use std::ptr;
 
 use gengpu_core::{Error, ErrorKind, Result};
@@ -10,6 +10,7 @@ use super::api::{CudaApi, CudaError, CudaLoader, RawDeviceInfo};
 
 type CuResult = c_int;
 type CuDevice = c_int;
+type CuContext = *mut c_void;
 
 type CuInit = unsafe extern "C" fn(flags: c_uint) -> CuResult;
 type CuDriverGetVersion = unsafe extern "C" fn(driver_version: *mut c_int) -> CuResult;
@@ -18,6 +19,10 @@ type CuDeviceGet = unsafe extern "C" fn(device: *mut CuDevice, ordinal: c_int) -
 type CuDeviceGetName =
     unsafe extern "C" fn(name: *mut c_char, length: c_int, device: CuDevice) -> CuResult;
 type CuDeviceTotalMem = unsafe extern "C" fn(bytes: *mut usize, device: CuDevice) -> CuResult;
+type CuCtxCreate = unsafe extern "C" fn(context: *mut CuContext, flags: c_uint, device: CuDevice) -> CuResult;
+type CuCtxDestroy = unsafe extern "C" fn(context: CuContext) -> CuResult;
+type CuCtxPopCurrent = unsafe extern "C" fn(context: *mut CuContext) -> CuResult;
+type CuCtxPushCurrent = unsafe extern "C" fn(context: CuContext) -> CuResult;
 type CuGetErrorName = unsafe extern "C" fn(error: CuResult, name: *mut *const c_char) -> CuResult;
 type CuGetErrorString =
     unsafe extern "C" fn(error: CuResult, description: *mut *const c_char) -> CuResult;
@@ -33,6 +38,10 @@ struct DynamicCudaApi {
     cu_device_get: CuDeviceGet,
     cu_device_get_name: CuDeviceGetName,
     cu_device_total_mem: CuDeviceTotalMem,
+    cu_ctx_create: CuCtxCreate,
+    cu_ctx_destroy: CuCtxDestroy,
+    cu_ctx_pop_current: CuCtxPopCurrent,
+    cu_ctx_push_current: CuCtxPushCurrent,
     cu_get_error_name: Option<CuGetErrorName>,
     cu_get_error_string: Option<CuGetErrorString>,
 }
@@ -59,6 +68,15 @@ impl DynamicCudaApi {
             required_symbol::<CuDeviceGetName>(&library, b"cuDeviceGetName\0")?;
         let cu_device_total_mem =
             required_symbol::<CuDeviceTotalMem>(&library, b"cuDeviceTotalMem_v2\0")?;
+        let cu_ctx_create = required_symbol::<CuCtxCreate>(&library, b"cuCtxCreate_v2\0")?;
+        let cu_ctx_destroy = required_symbol::<CuCtxDestroy>(&library, b"cuCtxDestroy_v2\0")?;
+        let cu_ctx_pop_current =
+            required_symbol::<CuCtxPopCurrent>(&library, b"cuCtxPopCurrent_v2\0")?;
+        // Used only to restore the unexpected context if CUDA violates the
+        // documented create-then-pop stack ordering. PH1-004D will use this
+        // function for ordinary scoped current-context activation.
+        let cu_ctx_push_current =
+            required_symbol::<CuCtxPushCurrent>(&library, b"cuCtxPushCurrent_v2\0")?;
 
         // Error-description helpers improve diagnostics but are not required
         // for correct operation of the backend.
@@ -74,6 +92,10 @@ impl DynamicCudaApi {
             cu_device_get,
             cu_device_get_name,
             cu_device_total_mem,
+            cu_ctx_create,
+            cu_ctx_destroy,
+            cu_ctx_pop_current,
+            cu_ctx_push_current,
             cu_get_error_name,
             cu_get_error_string,
         })
@@ -96,9 +118,7 @@ impl DynamicCudaApi {
             let result = unsafe { get_error_name(code, &mut name) };
             if result == 0 && !name.is_null() {
                 error.name = Some(
-                    unsafe { CStr::from_ptr(name) }
-                        .to_string_lossy()
-                        .into_owned(),
+                    unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned(),
                 );
             }
         }
@@ -109,9 +129,7 @@ impl DynamicCudaApi {
             let result = unsafe { get_error_string(code, &mut description) };
             if result == 0 && !description.is_null() {
                 error.description = Some(
-                    unsafe { CStr::from_ptr(description) }
-                        .to_string_lossy()
-                        .into_owned(),
+                    unsafe { CStr::from_ptr(description) }.to_string_lossy().into_owned(),
                 );
             }
         }
@@ -124,6 +142,19 @@ impl DynamicCudaApi {
             Ok(())
         } else {
             Err(self.translate_error(result))
+        }
+    }
+
+    fn destroy_after_failed_detach(&self, context: CuContext, error: &mut CudaError) {
+        if let Err(cleanup_error) = self.check(unsafe { (self.cu_ctx_destroy)(context) }) {
+            let detail = format!(
+                "best-effort context destruction also failed with CUDA error code {}",
+                cleanup_error.code
+            );
+            error.description = Some(match error.description.take() {
+                Some(existing) => format!("{existing}; {detail}"),
+                None => detail,
+            });
         }
     }
 }
@@ -164,6 +195,56 @@ impl CudaApi for DynamicCudaApi {
             name,
             total_memory_bytes: total_memory as u64,
         })
+    }
+
+    fn create_context(&self, ordinal: i32) -> std::result::Result<usize, CudaError> {
+        let mut device = 0;
+        self.check(unsafe { (self.cu_device_get)(&mut device, ordinal) })?;
+
+        let mut context = ptr::null_mut();
+        self.check(unsafe { (self.cu_ctx_create)(&mut context, 0, device) })?;
+        if context.is_null() {
+            let mut error = CudaError::new(-1);
+            error.description = Some(String::from(
+                "cuCtxCreate_v2 succeeded but returned a null context handle",
+            ));
+            return Err(error);
+        }
+
+        // cuCtxCreate_v2 makes the new context current on this thread. Pop it
+        // immediately so creation returns a detached, owned context.
+        let mut popped = ptr::null_mut();
+        if let Err(mut error) = self.check(unsafe { (self.cu_ctx_pop_current)(&mut popped) }) {
+            self.destroy_after_failed_detach(context, &mut error);
+            return Err(error);
+        }
+
+        if popped != context {
+            let mut error = CudaError::new(-1);
+            error.description = Some(String::from(
+                "cuCtxPopCurrent_v2 returned a context different from the one just created",
+            ));
+
+            // Restore the unexpected popped context before cleaning up ours.
+            if !popped.is_null() {
+                if let Err(push_error) = self.check(unsafe { (self.cu_ctx_push_current)(popped) }) {
+                    error.description = Some(format!(
+                        "{}; restoring the prior context failed with CUDA error code {}",
+                        error.description.as_deref().unwrap_or("context stack mismatch"),
+                        push_error.code
+                    ));
+                }
+            }
+
+            self.destroy_after_failed_detach(context, &mut error);
+            return Err(error);
+        }
+
+        Ok(context as usize)
+    }
+
+    fn destroy_context(&self, handle: usize) -> std::result::Result<(), CudaError> {
+        self.check(unsafe { (self.cu_ctx_destroy)(handle as CuContext) })
     }
 }
 

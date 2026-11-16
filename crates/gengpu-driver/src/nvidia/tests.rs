@@ -1,4 +1,4 @@
-//! GPU-independent tests for NVIDIA driver lifecycle and error handling.
+//! GPU-independent tests for NVIDIA driver and context lifecycle behavior.
 
 use std::sync::{Arc, Mutex};
 
@@ -19,6 +19,11 @@ struct MockState {
     driver_version_error: Option<CudaError>,
     device_count_error: Option<CudaError>,
     device_info_error: Option<CudaError>,
+    context_create_error: Option<CudaError>,
+    context_destroy_error: Option<CudaError>,
+    context_create_calls: usize,
+    context_destroy_calls: usize,
+    destroyed_contexts: Vec<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -57,11 +62,26 @@ impl CudaApi for MockCudaApi {
         if let Some(error) = &state.device_info_error {
             return Err(error.clone());
         }
-        state
-            .devices
-            .get(ordinal as usize)
-            .cloned()
-            .ok_or_else(|| CudaError::new(101))
+        state.devices.get(ordinal as usize).cloned().ok_or_else(|| CudaError::new(101))
+    }
+
+    fn create_context(&self, ordinal: i32) -> std::result::Result<usize, CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.context_create_calls += 1;
+        if let Some(error) = &state.context_create_error {
+            return Err(error.clone());
+        }
+        Ok(10_000 + ordinal as usize)
+    }
+
+    fn destroy_context(&self, handle: usize) -> std::result::Result<(), CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.context_destroy_calls += 1;
+        if let Some(error) = &state.context_destroy_error {
+            return Err(error.clone());
+        }
+        state.destroyed_contexts.push(handle);
+        Ok(())
     }
 }
 
@@ -240,4 +260,131 @@ fn library_load_failure_is_reported_without_panicking() {
         driver.enumerate_devices().unwrap_err().kind(),
         ErrorKind::InvalidState
     );
+}
+
+#[test]
+fn context_creation_requires_initialized_driver() {
+    let (driver, _) = driver_with_mock(MockState::default());
+
+    let error = driver.create_context(DeviceId::new(0)).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidState);
+}
+
+#[test]
+fn context_creation_rejects_unknown_device() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+
+    let error = driver.create_context(DeviceId::new(1)).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::NotFound);
+    assert_eq!(api.state.lock().unwrap().context_create_calls, 0);
+}
+
+#[test]
+fn context_creation_and_explicit_close_manage_native_lifetime() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    assert_eq!(context.device_id(), DeviceId::new(0));
+    context.close().unwrap();
+    context.close().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.context_create_calls, 1);
+    assert_eq!(state.context_destroy_calls, 1);
+    assert_eq!(state.destroyed_contexts, vec![10_000]);
+}
+
+#[test]
+fn context_retains_backend_after_driver_is_dropped() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    drop(driver);
+    context.close().unwrap();
+
+    assert_eq!(api.state.lock().unwrap().destroyed_contexts, vec![10_000]);
+}
+
+#[test]
+fn failed_context_destruction_retains_handle_for_retry() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        context_destroy_error: Some(CudaError::new(709)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    assert_eq!(context.close().unwrap_err().kind(), ErrorKind::Driver);
+    api.state.lock().unwrap().context_destroy_error = None;
+    context.close().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.context_destroy_calls, 2);
+    assert_eq!(state.destroyed_contexts, vec![10_000]);
+}
+
+#[test]
+fn dropping_open_context_attempts_best_effort_destruction() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+
+    drop(driver.create_context(DeviceId::new(0)).unwrap());
+
+    assert_eq!(api.state.lock().unwrap().destroyed_contexts, vec![10_000]);
+}
+
+#[test]
+fn context_creation_driver_errors_are_translated() {
+    let (driver, _) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        context_create_error: Some(CudaError {
+            code: 999,
+            name: Some(String::from("CUDA_ERROR_UNKNOWN")),
+            description: Some(String::from("simulated create failure")),
+        }),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+
+    let error = driver.create_context(DeviceId::new(0)).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("CUDA_ERROR_UNKNOWN"));
+    assert!(error.message().contains("simulated create failure"));
 }

@@ -4,6 +4,7 @@
 //! handles, function pointers, and unsafe FFI remain private to this module.
 
 mod api;
+mod context;
 mod driver;
 mod loader;
 
