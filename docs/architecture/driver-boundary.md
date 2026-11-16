@@ -4,6 +4,7 @@
 
 Approved design; driver and context contracts introduced in PH1-002 and
 PH1-004B. NVIDIA context creation and destruction implemented in PH1-004C.
+NVIDIA scoped context activation and synchronization implemented in PH1-004D.
 
 ## Purpose
 
@@ -67,6 +68,9 @@ CUDA-specific types are not permitted in its signatures.
   shared concurrently through the public abstraction.
 - A CurrentContextGuard is neither Send nor Sync and is bound to the thread
   on which it was created.
+- CurrentContextGuard<'a> holds an exclusive mutable borrow of its context
+  for the guard's lifetime. Rust therefore prevents closing or mutably
+  operating on that context until the guard is finished or dropped.
 - NVIDIA context creation validates the logical device against the current
   device count, creates the CUDA context, and immediately pops the newly
   created context from the calling thread's current-context stack.
@@ -76,8 +80,20 @@ CUDA-specific types are not permitted in its signatures.
   failure so the caller can retry. Drop performs best-effort destruction.
 - A closed context rejects operations that require a live native context
   with ErrorKind::InvalidState.
-- Current-context activation and synchronization are not implemented yet;
-  they are the next context subphase, PH1-004D.
+- NVIDIA make_current pushes the context onto the calling thread's CUDA
+  context stack and returns a scoped guard. Guard cleanup pops the stack and
+  verifies that the popped native handle is the expected context.
+- If guard cleanup encounters an unexpected context, the backend attempts
+  to push that context back before reporting an InvalidState error.
+- Explicit guard cleanup is fallible. On failure, Drop makes one additional
+  best-effort cleanup attempt; cleanup failures are never allowed to panic.
+- NVIDIA synchronize temporarily pushes the target context, calls
+  cuCtxSynchronize, and attempts to pop the target context on both success
+  and failure paths. If synchronization and restoration both fail, the
+  synchronization error remains primary and restoration failure is included
+  in its diagnostic message.
+- Current-context state is managed through CUDA's thread-local stack. GenGPU
+  does not maintain a process-global current-context variable.
 
 ## Driver lifecycle and ownership
 
@@ -135,8 +151,7 @@ must become controlled GenGPU errors.
 
 This boundary does not implement:
 
-- current-context push/pop operations for ordinary caller use;
-- synchronization;
-- device memory, transfers, streams, or events;
+- device memory allocation or transfers;
+- streams or events;
 - PTX module loading or kernel launch;
 - compiler integration.
