@@ -1,8 +1,8 @@
 //! NVIDIA-owned execution context and device-memory resources.
 
 use std::any::Any;
-use std::ffi::CString;
 use std::cell::Cell;
+use std::ffi::CString;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
