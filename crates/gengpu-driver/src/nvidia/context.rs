@@ -4,7 +4,7 @@ use std::any::Any;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use gengpu_core::{DeviceId, Error, ErrorKind, Result};
 
@@ -23,6 +23,7 @@ pub(super) struct ContextInner {
     api: Arc<dyn CudaApi>,
     handle: Mutex<Option<usize>>,
     live_allocations: AtomicUsize,
+    orphaned_allocations: Mutex<Vec<u64>>,
 }
 
 impl ContextInner {
@@ -31,6 +32,7 @@ impl ContextInner {
             api,
             handle: Mutex::new(Some(handle)),
             live_allocations: AtomicUsize::new(0),
+            orphaned_allocations: Mutex::new(Vec::new()),
         }
     }
 
@@ -46,6 +48,72 @@ impl ContextInner {
             .ok_or_else(|| Error::new(ErrorKind::InvalidState, "NVIDIA context is already closed"))
     }
 
+    fn register_orphaned_allocation(&self, address: u64, decrement_live_count: bool) {
+        let mut orphaned = self
+            .orphaned_allocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        orphaned.push(address);
+
+        // Publish the orphan before making the live-allocation count reach
+        // zero. Context::close checks the count before draining this registry.
+        if decrement_live_count {
+            self.live_allocations.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    fn cleanup_orphaned_allocations(&self, handle: usize) -> Result<()> {
+        let pending = {
+            let mut orphaned = self
+                .orphaned_allocations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *orphaned)
+        };
+
+        let mut failed = Vec::new();
+        let mut first_error: Option<Error> = None;
+
+        for address in pending {
+            match release_orphaned_allocation(&self.api, handle, address) {
+                CleanupOutcome::Released(Ok(())) => {}
+                CleanupOutcome::Released(Err(error)) => {
+                    first_error = Some(match first_error.take() {
+                        Some(previous) => combine_errors(
+                            previous,
+                            error,
+                            "cleaning up another orphaned allocation",
+                        ),
+                        None => error,
+                    });
+                }
+                CleanupOutcome::Retain(error) => {
+                    failed.push(address);
+                    first_error = Some(match first_error.take() {
+                        Some(previous) => combine_errors(
+                            previous,
+                            error,
+                            "cleaning up another orphaned allocation",
+                        ),
+                        None => error,
+                    });
+                }
+            }
+        }
+
+        if !failed.is_empty() {
+            self.orphaned_allocations
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(failed);
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
     fn close(&self) -> Result<()> {
         if self.live_allocations.load(Ordering::Acquire) != 0 {
             return Err(Error::new(
@@ -53,6 +121,9 @@ impl ContextInner {
                 "cannot close an NVIDIA context while device allocations remain live",
             ));
         }
+
+        let native_handle = self.handle()?;
+        self.cleanup_orphaned_allocations(native_handle)?;
 
         let mut handle = self.handle.lock().map_err(|_| {
             Error::new(
@@ -76,8 +147,12 @@ impl Drop for ContextInner {
     fn drop(&mut self) {
         if let Ok(handle) = self.handle.get_mut() {
             if let Some(native_handle) = *handle {
-                // Every live allocation owns an Arc<ContextInner>, so this
-                // final drop cannot occur while a tracked allocation is live.
+                // Every returned allocation retains this ContextInner. Any
+                // allocation whose Drop cleanup failed is first transferred
+                // to the orphan registry and no longer owns a separate Arc.
+                // CUDA context destruction is the final reclamation boundary
+                // if best-effort explicit frees still fail here.
+                let _ = self.cleanup_orphaned_allocations(native_handle);
                 let _ = self.api.destroy_context(native_handle);
                 *handle = None;
             }
