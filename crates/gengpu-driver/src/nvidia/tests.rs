@@ -1367,9 +1367,9 @@ fn ptx_module_load_failure_restores_context_and_translates_error() {
 }
 
 #[test]
-fn ptx_module_is_left_for_context_reclamation_when_restoration_fails_after_load() {
+fn ptx_module_is_registered_for_context_cleanup_when_restoration_fails_after_load() {
     let (driver, api) = initialized_driver();
-    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
     {
         let mut state = api.state.lock().unwrap();
         state.pop_error = Some(CudaError::new(709));
@@ -1382,12 +1382,20 @@ fn ptx_module_is_left_for_context_reclamation_when_restoration_fails_after_load(
         .expect("context restoration failure must be returned");
 
     assert_eq!(error.kind(), ErrorKind::Driver);
+    {
+        let state = api.state.lock().unwrap();
+        assert_eq!(state.module_load_calls, 1);
+        assert_eq!(state.module_unload_calls, 0);
+        assert_eq!(state.push_calls, 1);
+        assert_eq!(state.pop_calls, 2);
+        assert!(state.context_stack.is_empty());
+    }
+
+    context.close().unwrap();
     let state = api.state.lock().unwrap();
-    assert_eq!(state.module_load_calls, 1);
-    assert_eq!(state.module_unload_calls, 0);
-    assert_eq!(state.push_calls, 1);
-    assert_eq!(state.pop_calls, 2);
-    assert!(state.context_stack.is_empty());
+    assert_eq!(state.module_unload_calls, 1);
+    assert_eq!(state.unloaded_modules, vec![20_001]);
+    assert_eq!(state.destroyed_contexts, vec![10_000]);
 }
 
 #[test]
@@ -1683,4 +1691,100 @@ fn invalid_ptx_is_rejected_before_nvidia_context_activation() {
     let state = api.state.lock().unwrap();
     assert_eq!(state.module_load_calls, 0);
     assert_eq!(state.push_calls, 0);
+}
+
+
+#[test]
+fn live_module_prevents_explicit_context_close_until_unloaded() {
+    let (driver, api) = initialized_driver();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut module = context.load_ptx(".version 7.0\\n.target sm_50").unwrap();
+
+    let error = context.close().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidState);
+    assert!(error.message().contains("PTX modules remain live"));
+    assert_eq!(api.state.lock().unwrap().context_destroy_calls, 0);
+
+    module.unload().unwrap();
+    context.close().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_unload_calls, 1);
+    assert_eq!(state.destroyed_contexts, vec![10_000]);
+}
+
+#[test]
+fn dropped_module_transfers_failed_unload_to_context_for_close_retry() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        module_unload_error: Some(CudaError::new(700)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    let module = context.load_ptx(".version 7.0\\n.target sm_50").unwrap();
+
+    drop(module);
+    assert_eq!(api.state.lock().unwrap().module_unload_calls, 1);
+
+    let error = context.close().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert_eq!(api.state.lock().unwrap().context_destroy_calls, 0);
+
+    api.state.lock().unwrap().module_unload_error = None;
+    context.close().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_unload_calls, 3);
+    assert_eq!(state.unloaded_modules, vec![20_001]);
+    assert_eq!(state.destroyed_contexts, vec![10_000]);
+}
+
+#[test]
+fn context_drop_retries_orphaned_module_before_destroying_native_context() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        module_unload_error: Some(CudaError::new(700)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let module = context.load_ptx(".version 7.0\\n.target sm_50").unwrap();
+
+    drop(module);
+    drop(context);
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_unload_calls, 2);
+    assert!(state.unloaded_modules.is_empty());
+    assert_eq!(state.destroyed_contexts, vec![10_000]);
+}
+
+#[test]
+fn orphan_module_is_not_unloaded_twice_when_context_restore_fails() {
+    let (driver, api) = initialized_driver();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    let module = context.load_ptx(".version 7.0\\n.target sm_50").unwrap();
+    drop(module);
+
+    {
+        let mut state = api.state.lock().unwrap();
+        state.pop_error = Some(CudaError::new(709));
+        state.pop_error_remaining = 1;
+    }
+    let error = context.close().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Driver);
+
+    context.close().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_unload_calls, 2); // Drop attempt + one orphan attempt
+    assert_eq!(state.unloaded_modules, vec![20_001]);
+    assert_eq!(state.destroyed_contexts, vec![10_000]);
 }
