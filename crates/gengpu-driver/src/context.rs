@@ -39,6 +39,44 @@ pub trait Context: Send {
         ))
     }
 
+    /// Copies bytes from host memory into an allocation owned by this context.
+    ///
+    /// The allocation is mutably borrowed for the complete operation. The
+    /// offset is measured in bytes from the beginning of the allocation.
+    /// Backends that do not yet implement host-to-device transfers return
+    /// ErrorKind::Unsupported.
+    fn copy_to_device(
+        &self,
+        destination: &mut DeviceAllocation,
+        offset: usize,
+        source: &[u8],
+    ) -> Result<()> {
+        let _ = (destination, offset, source);
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "this driver backend does not implement host-to-device transfers",
+        ))
+    }
+
+    /// Copies bytes from an allocation owned by this context into host memory.
+    ///
+    /// The allocation is mutably borrowed for the complete operation. The
+    /// offset is measured in bytes from the beginning of the allocation.
+    /// Backends that do not yet implement device-to-host transfers return
+    /// ErrorKind::Unsupported.
+    fn copy_from_device(
+        &self,
+        source: &mut DeviceAllocation,
+        offset: usize,
+        destination: &mut [u8],
+    ) -> Result<()> {
+        let _ = (source, offset, destination);
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "this driver backend does not implement device-to-host transfers",
+        ))
+    }
+
     /// Synchronizes this context without changing the caller's observable
     /// current-context state.
     ///
@@ -114,12 +152,67 @@ impl Drop for CurrentContextGuard<'_> {
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
     use std::cell::Cell;
     use std::rc::Rc;
+    use std::sync::Arc;
 
-    use gengpu_core::{Error, ErrorKind};
+    use gengpu_core::{DeviceId, Error, ErrorKind, Result};
 
-    use super::CurrentContextGuard;
+    use crate::allocation::CleanupOutcome;
+    use crate::{DeviceAddress, DeviceAllocation};
+
+    use super::{Context, CurrentContextGuard};
+
+    struct StubContext;
+
+    impl Context for StubContext {
+        fn device_id(&self) -> DeviceId {
+            DeviceId::new(0)
+        }
+
+        fn make_current(&mut self) -> Result<CurrentContextGuard<'_>> {
+            Ok(CurrentContextGuard::new(self, || Ok(())))
+        }
+
+        fn synchronize(&mut self) -> Result<()> {
+            Ok(())
+        }
+
+        fn close(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    fn test_allocation() -> DeviceAllocation {
+        let owner: Arc<dyn Any + Send + Sync> = Arc::new(());
+        DeviceAllocation::new(
+            DeviceId::new(0),
+            DeviceAddress::from_raw(0xCAFE),
+            16,
+            owner,
+            || CleanupOutcome::Released(Ok(())),
+            || {},
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn transfer_methods_default_to_unsupported() {
+        let context = StubContext;
+        let mut allocation = test_allocation();
+        let mut destination = [0_u8; 4];
+
+        let to_device = context
+            .copy_to_device(&mut allocation, 0, &[1, 2, 3, 4])
+            .unwrap_err();
+        let from_device = context
+            .copy_from_device(&mut allocation, 0, &mut destination)
+            .unwrap_err();
+
+        assert_eq!(to_device.kind(), ErrorKind::Unsupported);
+        assert_eq!(from_device.kind(), ErrorKind::Unsupported);
+    }
 
     #[test]
     fn finishing_guard_runs_cleanup_once() {
