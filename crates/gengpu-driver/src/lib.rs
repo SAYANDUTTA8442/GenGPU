@@ -5,14 +5,18 @@
 //! must remain behind the crate's public abstractions.
 
 mod allocation;
+mod argument;
 mod context;
 mod driver;
 mod module;
+mod launch;
 
 /// NVIDIA-specific driver backend.
 pub mod nvidia;
 
 pub use allocation::{DeviceAddress, DeviceAllocation};
+pub use argument::{KernelArg, SupportedScalar};
 pub use context::{Context, CurrentContextGuard};
 pub use driver::Driver;
 pub use module::{KernelFunction, Module};
+pub use launch::{Dim3, LaunchConfig};
