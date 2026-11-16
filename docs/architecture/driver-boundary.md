@@ -106,18 +106,25 @@ The backend-neutral API exposes an opaque `DeviceAddress` and an owned
 - DeviceAddress is a numeric device-space address, not a host pointer. Host
   code must never dereference it.
 - DeviceAllocation records its DeviceId, opaque address, and byte size.
-- DeviceAllocation retains an owner token so backend context state can outlive
-  the public Context wrapper.
-- Explicit deallocation is fallible, idempotent after success, and retains
-  cleanup state after failure so the caller can retry.
+- DeviceAllocation retains shared NVIDIA context state so the native context
+  and driver library outlive the public Context wrapper when necessary.
+- Explicit deallocation activates the owning context, calls `cuMemFree_v2`,
+  and restores the previous current-context stack.
+- A failed free retains cleanup state for retry. If the free succeeds but
+  restoring the prior context fails, the allocation is marked released and
+  the restoration error is still reported; the free is never repeated.
 - Drop performs one best-effort cleanup attempt and never panics.
 - Zero-byte allocations are rejected with ErrorKind::InvalidArgument.
-- Context::allocate defaults to ErrorKind::Unsupported until a backend
-  implements device memory allocation.
+- Explicit context close is rejected while allocations remain live. Once all
+  allocations are released, close may destroy the native context.
+- If the public Context wrapper is dropped while allocations remain live,
+  shared context state keeps the native context alive until allocation cleanup
+  completes; final shared-state drop performs best-effort context destruction.
+- Context::allocate defaults to ErrorKind::Unsupported for backends that do
+  not implement device memory allocation.
 
-The NVIDIA backend allocation implementation and enforcement of context
-close restrictions are deferred to PH1-005C. Host-device transfers and
-asynchronous allocation are outside this phase.
+Host-device transfers, pools, streams, and asynchronous allocation are
+outside this phase.
 
 ## Driver lifecycle and ownership
 
