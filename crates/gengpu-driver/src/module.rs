@@ -88,6 +88,25 @@ impl<'module> KernelFunction<'module> {
     }
 }
 
+/// Validates a kernel function name before backend lookup.
+pub(crate) fn validate_function_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::new(
+            ErrorKind::InvalidArgument,
+            "kernel function name must not be empty",
+        ));
+    }
+
+    if name.as_bytes().contains(&0) {
+        return Err(Error::new(
+            ErrorKind::InvalidArgument,
+            "kernel function name must not contain an embedded NUL byte",
+        ));
+    }
+
+    Ok(())
+}
+
 /// Validates PTX text before it is passed to a backend API.
 pub(crate) fn validate_ptx(ptx: &str) -> Result<()> {
     if ptx.is_empty() {
@@ -122,6 +141,24 @@ mod tests {
         fn unload(&mut self) -> Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn rejects_empty_function_name() {
+        assert_eq!(
+            super::validate_function_name("").unwrap_err().kind(),
+            ErrorKind::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn rejects_function_name_with_embedded_nul() {
+        assert_eq!(
+            super::validate_function_name("kernel\\0suffix")
+                .unwrap_err()
+                .kind(),
+            ErrorKind::InvalidArgument
+        );
     }
 
     #[test]
