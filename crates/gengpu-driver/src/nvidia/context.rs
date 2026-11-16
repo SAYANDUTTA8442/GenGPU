@@ -1,6 +1,7 @@
 //! NVIDIA-owned execution context and device-memory resources.
 
 use std::any::Any;
+use std::ffi::CString;
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -9,10 +10,11 @@ use std::sync::{Arc, Mutex, Weak};
 use gengpu_core::{DeviceId, Error, ErrorKind, Result};
 
 use crate::allocation::CleanupOutcome;
-use crate::{Context, CurrentContextGuard, DeviceAddress, DeviceAllocation};
+use crate::{Context, CurrentContextGuard, DeviceAddress, DeviceAllocation, Module};
 
 use super::api::CudaApi;
 use super::driver::cuda_error;
+use super::module::NvidiaModule;
 
 /// Shared native context state retained by every live allocation.
 ///
@@ -36,7 +38,11 @@ impl ContextInner {
         }
     }
 
-    fn handle(&self) -> Result<usize> {
+    pub(super) fn api(&self) -> &Arc<dyn CudaApi> {
+        &self.api
+    }
+
+    pub(super) fn handle(&self) -> Result<usize> {
         self.handle
             .lock()
             .map_err(|_| {
@@ -377,6 +383,56 @@ impl Context for NvidiaContext {
         })
     }
 
+    fn load_ptx(&self, ptx: &str) -> Result<Box<dyn Module>> {
+        crate::module::validate_ptx(ptx)?;
+        let ptx = CString::new(ptx).map_err(|_| {
+            Error::new(
+                ErrorKind::InvalidArgument,
+                "PTX source must not contain an embedded NUL byte",
+            )
+        })?;
+        let handle = self.ensure_open()?;
+        self.inner
+            .api
+            .push_current(handle)
+            .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
+
+        let load_result = self
+            .inner
+            .api
+            .load_module(&ptx)
+            .map_err(|error| cuda_error("cuModuleLoadData", error));
+        let restoration = pop_expected_context_retry(&self.inner.api, handle);
+
+        let module_handle = match (load_result, restoration) {
+            (Ok(module), Ok(())) => module,
+            (Err(error), Ok(())) => return Err(error),
+            (Err(error), Err(restore_error)) => {
+                return Err(combine_errors(
+                    error,
+                    restore_error,
+                    "restoring context after PTX module load failure",
+                ));
+            }
+            (Ok(module), Err(restore_error)) => {
+                let cleanup = unload_unreturned_module(&self.inner.api, handle, module);
+                return match cleanup {
+                    Ok(()) => Err(restore_error),
+                    Err(cleanup_error) => Err(combine_errors(
+                        restore_error,
+                        cleanup_error,
+                        "cleaning up a PTX module after context restoration failed",
+                    )),
+                };
+            }
+        };
+
+        Ok(Box::new(NvidiaModule::new(
+            Arc::clone(&self.inner),
+            module_handle,
+        )))
+    }
+
     fn synchronize(&mut self) -> Result<()> {
         let api = Arc::clone(&self.inner.api);
         let guard = self.make_current()?;
@@ -520,7 +576,7 @@ fn pop_expected_context(api: &Arc<dyn CudaApi>, expected: usize) -> Result<()> {
     Err(mismatch)
 }
 
-fn pop_expected_context_retry(api: &Arc<dyn CudaApi>, expected: usize) -> Result<()> {
+pub(super) fn pop_expected_context_retry(api: &Arc<dyn CudaApi>, expected: usize) -> Result<()> {
     match pop_expected_context(api, expected) {
         Ok(()) => Ok(()),
         Err(first_error) if first_error.kind() == ErrorKind::Driver => {
@@ -534,6 +590,30 @@ fn pop_expected_context_retry(api: &Arc<dyn CudaApi>, expected: usize) -> Result
             }
         }
         Err(error) => Err(error),
+    }
+}
+
+fn unload_unreturned_module(
+    api: &Arc<dyn CudaApi>,
+    context_handle: usize,
+    module_handle: usize,
+) -> Result<()> {
+    api.push_current(context_handle)
+        .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
+    let unload_result = api
+        .unload_module(module_handle)
+        .map_err(|error| cuda_error("cuModuleUnload", error));
+    let restoration = pop_expected_context_retry(api, context_handle);
+
+    match (unload_result, restoration) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(restore_error)) => Err(combine_errors(
+            error,
+            restore_error,
+            "restoring context after PTX module cleanup",
+        )),
     }
 }
 
@@ -626,7 +706,7 @@ fn release_allocation(inner: &Arc<ContextInner>, address: u64) -> CleanupOutcome
     }
 }
 
-fn combine_errors(primary: Error, secondary: Error, operation: &str) -> Error {
+pub(super) fn combine_errors(primary: Error, secondary: Error, operation: &str) -> Error {
     Error::new(
         primary.kind(),
         format!(
