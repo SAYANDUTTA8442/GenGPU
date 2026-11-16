@@ -133,21 +133,18 @@ impl CudaApi for MockCudaApi {
         Ok(state.pop_override.take().unwrap_or(popped))
     }
 
-    fn copy_to_device(
-        &self,
-        address: u64,
-        source: &[u8],
-    ) -> std::result::Result<(), CudaError> {
+    fn copy_to_device(&self, address: u64, source: &[u8]) -> std::result::Result<(), CudaError> {
         let mut state = self.state.lock().expect("mock state lock");
         state.copy_to_device_calls += 1;
         if let Some(error) = &state.copy_to_device_error {
             return Err(error.clone());
         }
         let length = u64::try_from(source.len()).expect("test buffer length fits u64");
-        let end = address.checked_add(length).ok_or_else(|| CudaError::new(700))?;
+        let end = address
+            .checked_add(length)
+            .ok_or_else(|| CudaError::new(700))?;
         let Some((base, buffer)) = state.device_buffers.iter_mut().find(|(base, buffer)| {
-            address >= *base
-                && end <= base.saturating_add(u64::try_from(buffer.len()).unwrap())
+            address >= *base && end <= base.saturating_add(u64::try_from(buffer.len()).unwrap())
         }) else {
             return Err(CudaError::new(700));
         };
@@ -1070,7 +1067,6 @@ fn failed_cleanup_of_unreturned_allocation_is_tracked_by_context() {
     assert_eq!(state.context_destroy_calls, 1);
 }
 
-
 #[test]
 fn host_device_transfers_round_trip_bytes_with_offsets() {
     let (driver, api) = initialized_driver();
@@ -1146,9 +1142,7 @@ fn zero_length_transfers_validate_ranges_without_cuda_calls() {
         .copy_from_device(&mut allocation, 8, &mut empty)
         .unwrap();
 
-    let invalid = context
-        .copy_to_device(&mut allocation, 9, &[])
-        .unwrap_err();
+    let invalid = context.copy_to_device(&mut allocation, 9, &[]).unwrap_err();
     assert_eq!(invalid.kind(), ErrorKind::InvalidArgument);
 
     let state = api.state.lock().unwrap();
