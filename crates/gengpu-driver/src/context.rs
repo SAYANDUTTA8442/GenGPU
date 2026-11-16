@@ -3,7 +3,9 @@
 use std::marker::PhantomData;
 use std::rc::Rc;
 
-use gengpu_core::{DeviceId, Result};
+use gengpu_core::{DeviceId, Error, ErrorKind, Result};
+
+use crate::DeviceAllocation;
 
 /// An owned execution context associated with one logical GPU device.
 ///
@@ -20,6 +22,22 @@ pub trait Context: Send {
     /// The mutable borrow held by the guard prevents this context from being
     /// closed or activated again until the guard is finished or dropped.
     fn make_current(&mut self) -> Result<CurrentContextGuard<'_>>;
+
+    /// Allocates device memory owned by this context.
+    ///
+    /// The returned allocation retains the backend state required to keep
+    /// its context alive. Explicit context closure must fail while allocations
+    /// remain live. A zero-byte request is invalid.
+    ///
+    /// Backends that do not yet implement device allocation return
+    /// ErrorKind::Unsupported.
+    fn allocate(&self, size_bytes: usize) -> Result<DeviceAllocation> {
+        let _ = size_bytes;
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "this driver backend does not implement device memory allocation",
+        ))
+    }
 
     /// Synchronizes this context without changing the caller's observable
     /// current-context state.
