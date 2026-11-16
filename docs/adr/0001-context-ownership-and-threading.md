@@ -60,8 +60,11 @@ This option is selected.
 - Making a context current is scoped. Finishing or dropping the guard restores
   the previously current context. The NVIDIA backend uses CUDA push/pop calls
   and verifies the popped native handle before considering cleanup successful.
-- If explicit guard cleanup fails, its cleanup state remains available for a
-  best-effort retry during Drop.
+- If ordinary explicit guard cleanup fails, its cleanup state remains
+  available for a best-effort retry during Drop. A detected context-stack
+  mismatch is terminal for that guard: after attempting to restore the
+  unexpected stack entry, it must not pop again because that could remove an
+  unrelated context or repeat a known mismatch.
 - Synchronization temporarily activates the context as needed and restores
   the previous current-context state before returning. If synchronization and
   restoration both fail, the synchronization failure remains the primary
@@ -92,7 +95,8 @@ Costs and limitations:
   state on every success and failure path. The lifetime-bound guard prevents
   conflicting operations through the same Context value while it is active,
   but cannot prevent unrelated external CUDA calls from mutating that host
-  thread's context stack.
+  thread's context stack. A detected stack mismatch is reported rather than
+  attempting further pops that could corrupt unrelated context state.
 
 Follow-up:
 
