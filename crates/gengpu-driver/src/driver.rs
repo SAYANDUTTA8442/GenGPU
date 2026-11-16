@@ -1,6 +1,6 @@
 //! Backend-neutral driver interface.
 
-use gengpu_core::{DeviceId, DeviceInfo, Result};
+use gengpu_core::{DeviceId, DeviceInfo, Error, ErrorKind, Result};
 
 use crate::context::Context;
 
@@ -43,5 +43,11 @@ pub trait Driver {
     /// Returns InvalidState if the driver has not been initialized,
     /// NotFound if the logical device is not available, or a backend error if
     /// context creation fails.
-    fn create_context(&self, device: DeviceId) -> Result<Box<dyn Context>>;
+    fn create_context(&self, device: DeviceId) -> Result<Box<dyn Context>> {
+        let _ = device;
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "this driver backend does not implement context creation",
+        ))
+    }
 }
