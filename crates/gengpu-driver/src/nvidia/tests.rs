@@ -166,7 +166,10 @@ fn initialization_failure_does_not_mark_driver_initialized() {
     let error = driver.initialize().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Driver);
-    assert_eq!(driver.enumerate_devices().unwrap_err().kind(), ErrorKind::InvalidState);
+    assert_eq!(
+        driver.enumerate_devices().unwrap_err().kind(),
+        ErrorKind::InvalidState
+    );
 }
 
 #[test]
@@ -203,14 +206,20 @@ fn driver_version_query_failure_does_not_mark_driver_initialized() {
     let error = driver.initialize().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::Driver);
-    assert_eq!(driver.enumerate_devices().unwrap_err().kind(), ErrorKind::InvalidState);
+    assert_eq!(
+        driver.enumerate_devices().unwrap_err().kind(),
+        ErrorKind::InvalidState
+    );
 }
 
 #[test]
 fn driver_version_is_unavailable_before_initialization() {
     let (driver, _) = driver_with_mock(MockState::default());
 
-    assert_eq!(driver.driver_version().unwrap_err().kind(), ErrorKind::InvalidState);
+    assert_eq!(
+        driver.driver_version().unwrap_err().kind(),
+        ErrorKind::InvalidState
+    );
 }
 
 #[test]
@@ -227,5 +236,8 @@ fn library_load_failure_is_reported_without_panicking() {
     let error = driver.initialize().unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::NotFound);
-    assert_eq!(driver.enumerate_devices().unwrap_err().kind(), ErrorKind::InvalidState);
+    assert_eq!(
+        driver.enumerate_devices().unwrap_err().kind(),
+        ErrorKind::InvalidState
+    );
 }

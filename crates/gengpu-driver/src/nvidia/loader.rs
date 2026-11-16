@@ -18,8 +18,7 @@ type CuDeviceGet = unsafe extern "C" fn(device: *mut CuDevice, ordinal: c_int) -
 type CuDeviceGetName =
     unsafe extern "C" fn(name: *mut c_char, length: c_int, device: CuDevice) -> CuResult;
 type CuDeviceTotalMem = unsafe extern "C" fn(bytes: *mut usize, device: CuDevice) -> CuResult;
-type CuGetErrorName =
-    unsafe extern "C" fn(error: CuResult, name: *mut *const c_char) -> CuResult;
+type CuGetErrorName = unsafe extern "C" fn(error: CuResult, name: *mut *const c_char) -> CuResult;
 type CuGetErrorString =
     unsafe extern "C" fn(error: CuResult, description: *mut *const c_char) -> CuResult;
 
@@ -96,7 +95,11 @@ impl DynamicCudaApi {
             // CUDA writes a pointer to a driver-owned, null-terminated string.
             let result = unsafe { get_error_name(code, &mut name) };
             if result == 0 && !name.is_null() {
-                error.name = Some(unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned());
+                error.name = Some(
+                    unsafe { CStr::from_ptr(name) }
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
         }
 
@@ -105,8 +108,11 @@ impl DynamicCudaApi {
             // CUDA writes a pointer to a driver-owned, null-terminated string.
             let result = unsafe { get_error_string(code, &mut description) };
             if result == 0 && !description.is_null() {
-                error.description =
-                    Some(unsafe { CStr::from_ptr(description) }.to_string_lossy().into_owned());
+                error.description = Some(
+                    unsafe { CStr::from_ptr(description) }
+                        .to_string_lossy()
+                        .into_owned(),
+                );
             }
         }
 
@@ -145,11 +151,7 @@ impl CudaApi for DynamicCudaApi {
 
         let mut name = [0; CUDA_DEVICE_NAME_BUFFER_LENGTH as usize];
         self.check(unsafe {
-            (self.cu_device_get_name)(
-                name.as_mut_ptr(),
-                CUDA_DEVICE_NAME_BUFFER_LENGTH,
-                device,
-            )
+            (self.cu_device_get_name)(name.as_mut_ptr(), CUDA_DEVICE_NAME_BUFFER_LENGTH, device)
         })?;
         let name = unsafe { CStr::from_ptr(name.as_ptr()) }
             .to_string_lossy()
