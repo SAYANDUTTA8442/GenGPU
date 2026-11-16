@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gengpu_core::{DeviceId, Error, ErrorKind, Result};
 
-use crate::DeviceAllocation;
+use crate::{DeviceAllocation, Module};
 
 /// An owned execution context associated with one logical GPU device.
 ///
@@ -74,6 +74,19 @@ pub trait Context: Send {
         Err(Error::new(
             ErrorKind::Unsupported,
             "this driver backend does not implement device-to-host transfers",
+        ))
+    }
+
+    /// Loads PTX text as a module owned by this context.
+    ///
+    /// Empty PTX and PTX containing an embedded NUL byte are rejected before
+    /// backend loading. Backends that do not yet implement module loading
+    /// return ErrorKind::Unsupported.
+    fn load_ptx(&self, ptx: &str) -> Result<Box<dyn Module>> {
+        crate::module::validate_ptx(ptx)?;
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "this driver backend does not implement PTX module loading",
         ))
     }
 
@@ -212,6 +225,32 @@ mod tests {
 
         assert_eq!(to_device.kind(), ErrorKind::Unsupported);
         assert_eq!(from_device.kind(), ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn ptx_loading_defaults_to_unsupported_for_valid_source() {
+        let context = StubContext;
+        let error = context
+            .load_ptx(".version 7.0\\n.target sm_50")
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn ptx_loading_rejects_empty_source_before_backend_dispatch() {
+        let context = StubContext;
+        let error = context.load_ptx("").unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn ptx_loading_rejects_embedded_nul_before_backend_dispatch() {
+        let context = StubContext;
+        let error = context.load_ptx(".version 7.0\\0.target sm_50").unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     }
 
     #[test]
