@@ -882,3 +882,32 @@ fn successful_free_is_not_retried_when_context_restoration_needs_retry() {
     assert!(state.context_stack.is_empty());
     assert_eq!(state.pop_calls, 3);
 }
+
+
+#[test]
+fn allocation_is_freed_when_initial_context_restoration_requires_retry() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        pop_error: Some(CudaError::new(709)),
+        pop_error_remaining: 1,
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context
+        .allocate(80)
+        .err()
+        .expect("allocation must report the initial restoration failure");
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.allocation_calls, 1);
+    assert_eq!(state.free_calls, 1);
+    assert_eq!(state.freed_addresses.len(), 1);
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.pop_calls, 3);
+}
