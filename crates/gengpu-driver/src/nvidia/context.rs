@@ -50,7 +50,16 @@ impl Context for NvidiaContext {
             .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
 
         let api = Arc::clone(&self.api);
+        let mut stack_mismatch_seen = false;
         Ok(CurrentContextGuard::new(self, move || {
+            // A mismatch means an unrelated context was above this guard's
+            // context. After restoring that stack entry, another pop would
+            // repeat the mismatch; if restoration failed, another pop could
+            // remove an unrelated context. Do not retry that unsafe operation.
+            if stack_mismatch_seen {
+                return Ok(());
+            }
+
             let popped = api
                 .pop_current()
                 .map_err(|error| cuda_error("cuCtxPopCurrent_v2", error))?;
@@ -59,6 +68,7 @@ impl Context for NvidiaContext {
                 return Ok(());
             }
 
+            stack_mismatch_seen = true;
             let mismatch = format!(
                 "cuCtxPopCurrent_v2 returned context handle {popped:#x}, expected {handle:#x}"
             );
@@ -70,7 +80,10 @@ impl Context for NvidiaContext {
                     let restore_error = cuda_error("cuCtxPushCurrent_v2", error);
                     return Err(Error::new(
                         restore_error.kind(),
-                        format!("{mismatch}; restoring the unexpected context also failed: {}", restore_error.message()),
+                        format!(
+                            "{mismatch}; restoring the unexpected context also failed: {}",
+                            restore_error.message()
+                        ),
                     ));
                 }
             }
@@ -80,9 +93,9 @@ impl Context for NvidiaContext {
     }
 
     fn synchronize(&mut self) -> Result<()> {
+        let api = Arc::clone(&self.api);
         let guard = self.make_current()?;
-        let synchronization = self
-            .api
+        let synchronization = api
             .synchronize()
             .map_err(|error| cuda_error("cuCtxSynchronize", error));
         let restoration = guard.finish();
