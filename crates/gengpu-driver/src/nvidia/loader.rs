@@ -11,6 +11,8 @@ use super::api::{CudaApi, CudaError, CudaLoader, RawDeviceInfo};
 type CuResult = c_int;
 type CuDevice = c_int;
 type CuContext = *mut c_void;
+type CuModule = *mut c_void;
+type CuFunction = *mut c_void;
 
 type CuInit = unsafe extern "C" fn(flags: c_uint) -> CuResult;
 type CuDriverGetVersion = unsafe extern "C" fn(driver_version: *mut c_int) -> CuResult;
@@ -31,6 +33,14 @@ type CuMemcpyDtoH =
     unsafe extern "C" fn(destination: *mut c_void, source: u64, bytesize: usize) -> CuResult;
 type CuMemAlloc = unsafe extern "C" fn(address: *mut u64, bytesize: usize) -> CuResult;
 type CuMemFree = unsafe extern "C" fn(address: u64) -> CuResult;
+type CuModuleLoadData =
+    unsafe extern "C" fn(module: *mut CuModule, image: *const c_void) -> CuResult;
+type CuModuleUnload = unsafe extern "C" fn(module: CuModule) -> CuResult;
+type CuModuleGetFunction = unsafe extern "C" fn(
+    function: *mut CuFunction,
+    module: CuModule,
+    name: *const c_char,
+) -> CuResult;
 type CuGetErrorName = unsafe extern "C" fn(error: CuResult, name: *mut *const c_char) -> CuResult;
 type CuGetErrorString =
     unsafe extern "C" fn(error: CuResult, description: *mut *const c_char) -> CuResult;
@@ -55,6 +65,9 @@ struct DynamicCudaApi {
     cu_memcpy_dtoh: CuMemcpyDtoH,
     cu_mem_alloc: CuMemAlloc,
     cu_mem_free: CuMemFree,
+    cu_module_load_data: CuModuleLoadData,
+    cu_module_unload: CuModuleUnload,
+    cu_module_get_function: CuModuleGetFunction,
     cu_get_error_name: Option<CuGetErrorName>,
     cu_get_error_string: Option<CuGetErrorString>,
 }
@@ -94,6 +107,12 @@ impl DynamicCudaApi {
 
         let cu_mem_alloc = required_symbol::<CuMemAlloc>(&library, b"cuMemAlloc_v2\0")?;
         let cu_mem_free = required_symbol::<CuMemFree>(&library, b"cuMemFree_v2\0")?;
+        let cu_module_load_data =
+            required_symbol::<CuModuleLoadData>(&library, b"cuModuleLoadData\0")?;
+        let cu_module_unload =
+            required_symbol::<CuModuleUnload>(&library, b"cuModuleUnload\0")?;
+        let cu_module_get_function =
+            required_symbol::<CuModuleGetFunction>(&library, b"cuModuleGetFunction\0")?;
 
         // Error-description helpers improve diagnostics but are not required
         // for correct operation of the backend.
@@ -118,6 +137,9 @@ impl DynamicCudaApi {
             cu_memcpy_dtoh,
             cu_mem_alloc,
             cu_mem_free,
+            cu_module_load_data,
+            cu_module_unload,
+            cu_module_get_function,
             cu_get_error_name,
             cu_get_error_string,
         })
@@ -312,6 +334,48 @@ impl CudaApi for DynamicCudaApi {
 
     fn free_memory(&self, address: u64) -> std::result::Result<(), CudaError> {
         self.check(unsafe { (self.cu_mem_free)(address) })
+    }
+
+    fn load_module(&self, ptx: &CStr) -> std::result::Result<usize, CudaError> {
+        let mut module = ptr::null_mut();
+        self.check(unsafe {
+            (self.cu_module_load_data)(&mut module, ptx.as_ptr().cast())
+        })?;
+        if module.is_null() {
+            let mut error = CudaError::new(-1);
+            error.description = Some(String::from(
+                "cuModuleLoadData succeeded but returned a null module handle",
+            ));
+            return Err(error);
+        }
+        Ok(module as usize)
+    }
+
+    fn unload_module(&self, module: usize) -> std::result::Result<(), CudaError> {
+        self.check(unsafe { (self.cu_module_unload)(module as CuModule) })
+    }
+
+    fn get_function(
+        &self,
+        module: usize,
+        name: &CStr,
+    ) -> std::result::Result<usize, CudaError> {
+        let mut function = ptr::null_mut();
+        self.check(unsafe {
+            (self.cu_module_get_function)(
+                &mut function,
+                module as CuModule,
+                name.as_ptr(),
+            )
+        })?;
+        if function.is_null() {
+            let mut error = CudaError::new(500);
+            error.description = Some(String::from(
+                "cuModuleGetFunction succeeded but returned a null function handle",
+            ));
+            return Err(error);
+        }
+        Ok(function as usize)
     }
 }
 
