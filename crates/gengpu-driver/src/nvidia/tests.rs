@@ -1698,7 +1698,7 @@ fn invalid_ptx_is_rejected_before_nvidia_context_activation() {
 fn live_module_prevents_explicit_context_close_until_unloaded() {
     let (driver, api) = initialized_driver();
     let mut context = driver.create_context(DeviceId::new(0)).unwrap();
-    let mut module = context.load_ptx(".version 7.0\\n.target sm_50").unwrap();
+    let mut module = context.load_ptx(".version 7.0\n.target sm_50").unwrap();
 
     let error = context.close().unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidState);
@@ -1725,7 +1725,7 @@ fn dropped_module_transfers_failed_unload_to_context_for_close_retry() {
     });
     driver.initialize().unwrap();
     let mut context = driver.create_context(DeviceId::new(0)).unwrap();
-    let module = context.load_ptx(".version 7.0\\n.target sm_50").unwrap();
+    let module = context.load_ptx(".version 7.0\n.target sm_50").unwrap();
 
     drop(module);
     assert_eq!(api.state.lock().unwrap().module_unload_calls, 1);
@@ -1755,7 +1755,7 @@ fn context_drop_retries_orphaned_module_before_destroying_native_context() {
     });
     driver.initialize().unwrap();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
-    let module = context.load_ptx(".version 7.0\\n.target sm_50").unwrap();
+    let module = context.load_ptx(".version 7.0\n.target sm_50").unwrap();
 
     drop(module);
     drop(context);
@@ -1778,7 +1778,7 @@ fn orphan_module_is_not_unloaded_twice_when_context_restore_fails() {
     });
     driver.initialize().unwrap();
     let mut context = driver.create_context(DeviceId::new(0)).unwrap();
-    let module = context.load_ptx(".version 7.0\\n.target sm_50").unwrap();
+    let module = context.load_ptx(".version 7.0\n.target sm_50").unwrap();
     drop(module); // First unload fails; Drop transfers the handle to ContextInner.
 
     {
