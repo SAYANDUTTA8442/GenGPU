@@ -44,6 +44,7 @@ pub struct DeviceAllocation {
     address: DeviceAddress,
     size_bytes: usize,
     cleanup: Option<Box<dyn FnMut() -> CleanupOutcome + Send + 'static>>,
+    on_drop_failure: Option<Box<dyn FnOnce() + Send + 'static>>,
     _owner: Arc<dyn Any + Send + Sync>,
 }
 
@@ -58,6 +59,7 @@ impl DeviceAllocation {
         size_bytes: usize,
         owner: Arc<dyn Any + Send + Sync>,
         cleanup: impl FnMut() -> CleanupOutcome + Send + 'static,
+        on_drop_failure: impl FnOnce() + Send + 'static,
     ) -> Result<Self> {
         if size_bytes == 0 {
             return Err(Error::new(
@@ -71,6 +73,7 @@ impl DeviceAllocation {
             address,
             size_bytes,
             cleanup: Some(Box::new(cleanup)),
+            on_drop_failure: Some(Box::new(on_drop_failure)),
             _owner: owner,
         })
     }
@@ -121,10 +124,17 @@ impl DeviceAllocation {
 impl Drop for DeviceAllocation {
     fn drop(&mut self) {
         if let Some(cleanup) = self.cleanup.as_mut() {
-            // Drop cannot report errors and must never panic. The owner token
-            // remains alive throughout this best-effort cleanup attempt.
-            let _ = cleanup();
-            self.cleanup = None;
+            // Drop cannot report errors. If the resource remains live after
+            // this best-effort attempt, transfer cleanup responsibility to the
+            // owning context before releasing the owner token.
+            if matches!(cleanup(), CleanupOutcome::Retain(_)) {
+                self.cleanup = None;
+                if let Some(on_drop_failure) = self.on_drop_failure.take() {
+                    on_drop_failure();
+                }
+            } else {
+                self.cleanup = None;
+            }
         }
     }
 }
@@ -144,6 +154,7 @@ mod tests {
             4096,
             Arc::new(()),
             cleanup,
+            || {},
         )
         .expect("allocation should be constructed")
     }
@@ -166,6 +177,7 @@ mod tests {
             0,
             Arc::new(()),
             || CleanupOutcome::Released(Ok(())),
+            || {},
         );
 
         assert_eq!(
