@@ -1330,9 +1330,9 @@ fn ptx_module_loads_inside_and_restores_owning_context() {
         let state = api.state.lock().unwrap();
         assert_eq!(state.module_load_calls, 1);
         assert_eq!(
-        state.loaded_ptx.as_deref(),
-        Some(".version 7.0\n.target sm_50")
-    );
+            state.loaded_ptx.as_deref(),
+            Some(".version 7.0\n.target sm_50")
+        );
         assert!(state.context_stack.is_empty());
         assert_eq!(state.push_calls, 1);
         assert_eq!(state.pop_calls, 1);
