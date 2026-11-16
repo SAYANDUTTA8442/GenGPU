@@ -33,6 +33,13 @@ struct MockState {
     pop_override: Option<usize>,
     synchronize_calls: usize,
     synchronize_error: Option<CudaError>,
+    allocation_calls: usize,
+    free_calls: usize,
+    allocation_error: Option<CudaError>,
+    free_error: Option<CudaError>,
+    free_error_remaining: usize,
+    allocated_addresses: Vec<u64>,
+    freed_addresses: Vec<u64>,
 }
 
 #[derive(Clone, Default)]
@@ -119,6 +126,31 @@ impl CudaApi for MockCudaApi {
         }
         let popped = state.context_stack.pop().unwrap_or(0);
         Ok(state.pop_override.take().unwrap_or(popped))
+    }
+
+    fn allocate_memory(&self, size_bytes: usize) -> std::result::Result<u64, CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.allocation_calls += 1;
+        if let Some(error) = &state.allocation_error {
+            return Err(error.clone());
+        }
+        let address = 0x10000 + (state.allocation_calls as u64 * 0x1000) + size_bytes as u64;
+        state.allocated_addresses.push(address);
+        Ok(address)
+    }
+
+    fn free_memory(&self, address: u64) -> std::result::Result<(), CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.free_calls += 1;
+        if state.free_error_remaining > 0 {
+            state.free_error_remaining -= 1;
+            return Err(state.free_error.clone().unwrap_or_else(|| CudaError::new(709)));
+        }
+        if let Some(error) = &state.free_error {
+            return Err(error.clone());
+        }
+        state.freed_addresses.push(address);
+        Ok(())
     }
 
     fn synchronize(&self) -> std::result::Result<(), CudaError> {
@@ -663,5 +695,150 @@ fn synchronization_restoration_failure_is_reported_when_sync_succeeds() {
     let state = api.state.lock().unwrap();
     assert!(state.context_stack.is_empty());
     assert_eq!(state.synchronize_calls, 1);
+    assert_eq!(state.pop_calls, 2);
+}
+
+
+#[test]
+fn device_allocation_uses_context_and_returns_metadata() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let allocation = context.allocate(4096).unwrap();
+
+    assert_eq!(allocation.device_id(), DeviceId::new(0));
+    assert_eq!(allocation.size_bytes(), 4096);
+    assert_eq!(allocation.device_address().as_u64(), 0x10000 + 0x1000 + 4096);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.allocation_calls, 1);
+    assert_eq!(state.context_stack, Vec::<usize>::new());
+    assert_eq!(state.push_calls, 1);
+    assert_eq!(state.pop_calls, 1);
+}
+
+#[test]
+fn zero_byte_device_allocation_is_rejected_before_cuda_call() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context.allocate(0).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(api.state.lock().unwrap().allocation_calls, 0);
+}
+
+#[test]
+fn allocation_failure_restores_previous_context_stack() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        allocation_error: Some(CudaError::new(2)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context.allocate(128).unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    let state = api.state.lock().unwrap();
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.allocation_calls, 1);
+    assert_eq!(state.pop_calls, 1);
+}
+
+#[test]
+fn live_allocation_prevents_explicit_context_close_until_deallocated() {
+    let (driver, api) = initialized_driver();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(256).unwrap();
+
+    assert_eq!(context.close().unwrap_err().kind(), ErrorKind::InvalidState);
+    allocation.deallocate().unwrap();
+    context.close().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.freed_addresses.len(), 1);
+    assert_eq!(state.context_destroy_calls, 1);
+}
+
+#[test]
+fn allocation_keeps_context_alive_after_context_wrapper_is_dropped() {
+    let (driver, api) = initialized_driver();
+    let mut allocation = {
+        let context = driver.create_context(DeviceId::new(0)).unwrap();
+        context.allocate(512).unwrap()
+    };
+
+    assert_eq!(api.state.lock().unwrap().context_destroy_calls, 0);
+    allocation.deallocate().unwrap();
+    assert_eq!(api.state.lock().unwrap().freed_addresses.len(), 1);
+    drop(allocation);
+    assert_eq!(api.state.lock().unwrap().context_destroy_calls, 1);
+}
+
+#[test]
+fn failed_device_free_retains_allocation_for_retry() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        free_error: Some(CudaError::new(709)),
+        free_error_remaining: 1,
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(128).unwrap();
+
+    assert_eq!(allocation.deallocate().unwrap_err().kind(), ErrorKind::Driver);
+    assert!(!allocation.is_deallocated());
+    api.state.lock().unwrap().free_error = None;
+    allocation.deallocate().unwrap();
+
+    assert!(allocation.is_deallocated());
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.free_calls, 2);
+    assert_eq!(state.freed_addresses.len(), 1);
+}
+
+#[test]
+fn dropping_device_allocation_frees_memory_and_then_context() {
+    let (driver, api) = initialized_driver();
+    let allocation = {
+        let context = driver.create_context(DeviceId::new(0)).unwrap();
+        context.allocate(64).unwrap()
+    };
+
+    drop(allocation);
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.freed_addresses.len(), 1);
+    assert_eq!(state.context_destroy_calls, 1);
+}
+
+#[test]
+fn free_error_is_reported_and_context_stack_is_restored() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        free_error: Some(CudaError::new(709)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(64).unwrap();
+
+    let error = allocation.deallocate().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    let state = api.state.lock().unwrap();
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.push_calls, 2);
     assert_eq!(state.pop_calls, 2);
 }
