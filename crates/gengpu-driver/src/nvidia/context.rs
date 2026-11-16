@@ -698,6 +698,35 @@ fn cleanup_unreturned_allocation(
     }
 }
 
+fn release_orphaned_module(
+    api: &Arc<dyn CudaApi>,
+    handle: usize,
+    module: usize,
+) -> CleanupOutcome {
+    if let Err(error) = api.push_current(handle) {
+        return CleanupOutcome::Retain(cuda_error("cuCtxPushCurrent_v2", error));
+    }
+
+    let unload_result = api
+        .unload_module(module)
+        .map_err(|error| cuda_error("cuModuleUnload", error));
+    let restore_result = pop_expected_context_retry(api, handle);
+
+    match (unload_result, restore_result) {
+        (Ok(()), Ok(())) => CleanupOutcome::Released(Ok(())),
+        // The native module is gone. Keep no orphan record even though the
+        // caller's context stack could not be restored; a retry must not
+        // issue cuModuleUnload a second time.
+        (Ok(()), Err(error)) => CleanupOutcome::Released(Err(error)),
+        (Err(error), Ok(())) => CleanupOutcome::Retain(error),
+        (Err(unload_error), Err(restore_error)) => CleanupOutcome::Retain(combine_errors(
+            unload_error,
+            restore_error,
+            "restoring context after orphaned PTX module cleanup",
+        )),
+    }
+}
+
 fn release_orphaned_allocation(
     api: &Arc<dyn CudaApi>,
     handle: usize,
