@@ -113,16 +113,28 @@ The backend-neutral API exposes an opaque `DeviceAddress` and an owned
   and driver library outlive the public Context wrapper when necessary.
 - Explicit deallocation activates the owning context, calls `cuMemFree_v2`,
   and restores the previous current-context stack.
-- A failed free retains cleanup state for retry. If the free succeeds but
-  restoring the prior context fails, the allocation is marked released and
-  the restoration error is still reported; the free is never repeated.
-- Drop performs one best-effort cleanup attempt and never panics.
-- Zero-byte allocations are rejected with ErrorKind::InvalidArgument.
-- Explicit context close is rejected while allocations remain live. Once all
-  allocations are released, close may destroy the native context.
+- A failed explicit free retains cleanup state on DeviceAllocation so the
+  caller can retry. If the free succeeds but restoring the prior context fails,
+  the allocation is marked released and the restoration error is still
+  reported; the free is never repeated.
+- If DeviceAllocation is dropped while its best-effort free still fails,
+  cleanup responsibility transfers to the owning context's orphan registry.
+  The live-allocation count is decremented only after the orphan address has
+  been recorded.
+- Explicit context close is rejected while caller-owned allocations remain
+  live. Once that count reaches zero, close retries every orphaned free before
+  destroying the native context. Failed orphan frees remain registered for a
+  later close attempt.
 - If the public Context wrapper is dropped while allocations remain live,
   shared context state keeps the native context alive until allocation cleanup
-  completes; final shared-state drop performs best-effort context destruction.
+  completes. Final shared-state drop retries orphaned frees and then destroys
+  the CUDA context; CUDA context destruction is the final reclamation boundary
+  for resources whose individual best-effort free still fails.
+- If allocation succeeds but context restoration and cleanup both fail before
+  the allocation can be returned, the address is registered as an orphan so
+  context close or final context destruction still owns its reclamation.
+- Drop performs best-effort cleanup and never panics.
+- Zero-byte allocations are rejected with ErrorKind::InvalidArgument.
 - Context::allocate defaults to ErrorKind::Unsupported for backends that do
   not implement device memory allocation.
 
