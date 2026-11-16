@@ -10,7 +10,11 @@ pub(super) struct CudaError {
 
 impl CudaError {
     pub fn new(code: i32) -> Self {
-        Self { code, name: None, description: None }
+        Self {
+            code,
+            name: None,
+            description: None,
+        }
     }
 }
 

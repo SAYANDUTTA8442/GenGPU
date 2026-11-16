@@ -145,7 +145,10 @@ impl super::super::Driver for NvidiaDriver {
         }
 
         let ordinal = i32::try_from(device.index()).map_err(|_| {
-            Error::new(ErrorKind::NotFound, "logical NVIDIA device ID is out of range")
+            Error::new(
+                ErrorKind::NotFound,
+                "logical NVIDIA device ID is out of range",
+            )
         })?;
         if ordinal >= count {
             return Err(Error::new(

@@ -266,7 +266,10 @@ fn library_load_failure_is_reported_without_panicking() {
 fn context_creation_requires_initialized_driver() {
     let (driver, _) = driver_with_mock(MockState::default());
 
-    let error = driver.create_context(DeviceId::new(0)).unwrap_err();
+    let error = driver
+        .create_context(DeviceId::new(0))
+        .err()
+        .expect("context creation should fail");
 
     assert_eq!(error.kind(), ErrorKind::InvalidState);
 }
@@ -282,7 +285,10 @@ fn context_creation_rejects_unknown_device() {
     });
     driver.initialize().unwrap();
 
-    let error = driver.create_context(DeviceId::new(1)).unwrap_err();
+    let error = driver
+        .create_context(DeviceId::new(1))
+        .err()
+        .expect("unknown device should be rejected");
 
     assert_eq!(error.kind(), ErrorKind::NotFound);
     assert_eq!(api.state.lock().unwrap().context_create_calls, 0);
@@ -382,7 +388,10 @@ fn context_creation_driver_errors_are_translated() {
     });
     driver.initialize().unwrap();
 
-    let error = driver.create_context(DeviceId::new(0)).unwrap_err();
+    let error = driver
+        .create_context(DeviceId::new(0))
+        .err()
+        .expect("context creation should fail");
 
     assert_eq!(error.kind(), ErrorKind::Driver);
     assert!(error.message().contains("CUDA_ERROR_UNKNOWN"));

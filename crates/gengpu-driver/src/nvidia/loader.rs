@@ -19,7 +19,8 @@ type CuDeviceGet = unsafe extern "C" fn(device: *mut CuDevice, ordinal: c_int) -
 type CuDeviceGetName =
     unsafe extern "C" fn(name: *mut c_char, length: c_int, device: CuDevice) -> CuResult;
 type CuDeviceTotalMem = unsafe extern "C" fn(bytes: *mut usize, device: CuDevice) -> CuResult;
-type CuCtxCreate = unsafe extern "C" fn(context: *mut CuContext, flags: c_uint, device: CuDevice) -> CuResult;
+type CuCtxCreate =
+    unsafe extern "C" fn(context: *mut CuContext, flags: c_uint, device: CuDevice) -> CuResult;
 type CuCtxDestroy = unsafe extern "C" fn(context: CuContext) -> CuResult;
 type CuCtxPopCurrent = unsafe extern "C" fn(context: *mut CuContext) -> CuResult;
 type CuCtxPushCurrent = unsafe extern "C" fn(context: CuContext) -> CuResult;
@@ -118,7 +119,9 @@ impl DynamicCudaApi {
             let result = unsafe { get_error_name(code, &mut name) };
             if result == 0 && !name.is_null() {
                 error.name = Some(
-                    unsafe { CStr::from_ptr(name) }.to_string_lossy().into_owned(),
+                    unsafe { CStr::from_ptr(name) }
+                        .to_string_lossy()
+                        .into_owned(),
                 );
             }
         }
@@ -129,7 +132,9 @@ impl DynamicCudaApi {
             let result = unsafe { get_error_string(code, &mut description) };
             if result == 0 && !description.is_null() {
                 error.description = Some(
-                    unsafe { CStr::from_ptr(description) }.to_string_lossy().into_owned(),
+                    unsafe { CStr::from_ptr(description) }
+                        .to_string_lossy()
+                        .into_owned(),
                 );
             }
         }
@@ -230,7 +235,10 @@ impl CudaApi for DynamicCudaApi {
                 if let Err(push_error) = self.check(unsafe { (self.cu_ctx_push_current)(popped) }) {
                     error.description = Some(format!(
                         "{}; restoring the prior context failed with CUDA error code {}",
-                        error.description.as_deref().unwrap_or("context stack mismatch"),
+                        error
+                            .description
+                            .as_deref()
+                            .unwrap_or("context stack mismatch"),
                         push_error.code
                     ));
                 }

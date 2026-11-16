@@ -33,9 +33,8 @@ impl NvidiaContext {
     }
 
     fn ensure_open(&self) -> Result<usize> {
-        self.handle.ok_or_else(|| {
-            Error::new(ErrorKind::InvalidState, "NVIDIA context is already closed")
-        })
+        self.handle
+            .ok_or_else(|| Error::new(ErrorKind::InvalidState, "NVIDIA context is already closed"))
     }
 }
 
