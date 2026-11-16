@@ -64,3 +64,4 @@ Distinguish facts from assumptions. Cite external specifications or documentatio
 
 - [ADR-0001: Context Ownership and Threading](0001-context-ownership-and-threading.md) — Accepted. Defines context ownership, backend lifetime, scoped current-context behavior, and initial thread-safety constraints.
 - [ADR-0002: Synchronous Host–Device Memory Transfers](0002-synchronous-host-device-transfers.md) — Accepted. Defines borrowed-buffer transfer APIs, exact context ownership checks, bounds validation, synchronous completion, and error semantics.
+- [ADR-0003: PTX Module Ownership and Lifecycle](0003-ptx-module-ownership-and-lifecycle.md) — Accepted. Defines PTX-text loading through `cuModuleLoadData`, module/context ownership, borrowed kernel-function lifetime, unload behavior, and cleanup semantics.
