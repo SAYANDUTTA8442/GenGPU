@@ -1,5 +1,6 @@
 //! GPU-independent tests for NVIDIA driver and context lifecycle behavior.
 
+use std::ffi::CStr;
 use std::sync::{Arc, Mutex};
 
 use gengpu_core::{DeviceId, Error, ErrorKind};
@@ -46,6 +47,15 @@ struct MockState {
     free_error_remaining: usize,
     allocated_addresses: Vec<u64>,
     freed_addresses: Vec<u64>,
+    module_load_calls: usize,
+    module_unload_calls: usize,
+    function_lookup_calls: usize,
+    module_load_error: Option<CudaError>,
+    module_unload_error: Option<CudaError>,
+    function_lookup_error: Option<CudaError>,
+    loaded_ptx: Option<String>,
+    looked_up_function: Option<String>,
+    unloaded_modules: Vec<usize>,
 }
 
 #[derive(Clone, Default)]
@@ -216,6 +226,40 @@ impl CudaApi for MockCudaApi {
             Some(error) => Err(error.clone()),
             None => Ok(()),
         }
+    }
+
+    fn load_module(&self, ptx: &CStr) -> std::result::Result<usize, CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.module_load_calls += 1;
+        if let Some(error) = &state.module_load_error {
+            return Err(error.clone());
+        }
+        state.loaded_ptx = Some(ptx.to_string_lossy().into_owned());
+        Ok(20_000 + state.module_load_calls)
+    }
+
+    fn unload_module(&self, module: usize) -> std::result::Result<(), CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.module_unload_calls += 1;
+        if let Some(error) = &state.module_unload_error {
+            return Err(error.clone());
+        }
+        state.unloaded_modules.push(module);
+        Ok(())
+    }
+
+    fn get_function(
+        &self,
+        _module: usize,
+        name: &CStr,
+    ) -> std::result::Result<usize, CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.function_lookup_calls += 1;
+        state.looked_up_function = Some(name.to_string_lossy().into_owned());
+        if let Some(error) = &state.function_lookup_error {
+            return Err(error.clone());
+        }
+        Ok(30_000 + state.function_lookup_calls)
     }
 }
 
