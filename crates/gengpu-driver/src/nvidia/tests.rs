@@ -112,7 +112,10 @@ impl CudaApi for MockCudaApi {
         state.pop_calls += 1;
         if state.pop_error_remaining > 0 {
             state.pop_error_remaining -= 1;
-            return Err(state.pop_error.clone().unwrap_or_else(|| CudaError::new(709)));
+            return Err(state
+                .pop_error
+                .clone()
+                .unwrap_or_else(|| CudaError::new(709)));
         }
         let popped = state.context_stack.pop().unwrap_or(0);
         Ok(state.pop_override.take().unwrap_or(popped))
@@ -477,7 +480,10 @@ fn nested_context_guards_restore_the_previous_context() {
 
     let first_guard = first.make_current().unwrap();
     let second_guard = second.make_current().unwrap();
-    assert_eq!(api.state.lock().unwrap().context_stack, vec![10_000, 10_001]);
+    assert_eq!(
+        api.state.lock().unwrap().context_stack,
+        vec![10_000, 10_001]
+    );
 
     second_guard.finish().unwrap();
     assert_eq!(api.state.lock().unwrap().context_stack, vec![10_000]);
@@ -626,7 +632,9 @@ fn synchronization_error_remains_primary_when_restoration_fails() {
 
     assert_eq!(error.kind(), ErrorKind::Driver);
     assert!(error.message().contains("999"));
-    assert!(error.message().contains("restoring the previous current context"));
+    assert!(error
+        .message()
+        .contains("restoring the previous current context"));
     let state = api.state.lock().unwrap();
     assert!(state.context_stack.is_empty());
     assert_eq!(state.pop_calls, 2);
