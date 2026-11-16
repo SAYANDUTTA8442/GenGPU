@@ -7,6 +7,7 @@
 mod allocation;
 mod context;
 mod driver;
+mod module;
 
 /// NVIDIA-specific driver backend.
 pub mod nvidia;
@@ -14,3 +15,4 @@ pub mod nvidia;
 pub use allocation::{DeviceAddress, DeviceAllocation};
 pub use context::{Context, CurrentContextGuard};
 pub use driver::Driver;
+pub use module::{KernelFunction, Module};
