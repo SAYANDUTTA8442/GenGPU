@@ -117,23 +117,21 @@ impl Module for NvidiaModule {
         api.push_current(context_handle)
             .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
 
-        let lookup_result = api
-            .get_function(module_handle, &name)
-            .map_err(|error| {
-                if error.code == CUDA_ERROR_NOT_FOUND {
-                    let diagnostic = cuda_error("cuModuleGetFunction", error);
-                    Error::new(
-                        ErrorKind::NotFound,
-                        format!(
-                            "kernel function '{}' was not found in the NVIDIA module: {}",
-                            name.to_string_lossy(),
-                            diagnostic.message()
-                        ),
-                    )
-                } else {
-                    cuda_error("cuModuleGetFunction", error)
-                }
-            });
+        let lookup_result = api.get_function(module_handle, &name).map_err(|error| {
+            if error.code == CUDA_ERROR_NOT_FOUND {
+                let diagnostic = cuda_error("cuModuleGetFunction", error);
+                Error::new(
+                    ErrorKind::NotFound,
+                    format!(
+                        "kernel function '{}' was not found in the NVIDIA module: {}",
+                        name.to_string_lossy(),
+                        diagnostic.message()
+                    ),
+                )
+            } else {
+                cuda_error("cuModuleGetFunction", error)
+            }
+        });
         let restoration = pop_expected_context_retry(&api, context_handle);
 
         let function_handle = match (lookup_result, restoration) {
