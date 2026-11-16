@@ -33,6 +33,11 @@ struct MockState {
     pop_override: Option<usize>,
     synchronize_calls: usize,
     synchronize_error: Option<CudaError>,
+    copy_to_device_calls: usize,
+    copy_from_device_calls: usize,
+    copy_to_device_error: Option<CudaError>,
+    copy_from_device_error: Option<CudaError>,
+    device_buffers: Vec<(u64, Vec<u8>)>,
     allocation_calls: usize,
     free_calls: usize,
     allocation_error: Option<CudaError>,
@@ -128,6 +133,52 @@ impl CudaApi for MockCudaApi {
         Ok(state.pop_override.take().unwrap_or(popped))
     }
 
+    fn copy_to_device(
+        &self,
+        address: u64,
+        source: &[u8],
+    ) -> std::result::Result<(), CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.copy_to_device_calls += 1;
+        if let Some(error) = &state.copy_to_device_error {
+            return Err(error.clone());
+        }
+        let length = u64::try_from(source.len()).expect("test buffer length fits u64");
+        let end = address.checked_add(length).ok_or_else(|| CudaError::new(700))?;
+        let Some((base, buffer)) = state.device_buffers.iter_mut().find(|(base, buffer)| {
+            address >= *base
+                && end <= base.saturating_add(u64::try_from(buffer.len()).unwrap())
+        }) else {
+            return Err(CudaError::new(700));
+        };
+        let start = usize::try_from(address - *base).expect("test offset fits usize");
+        buffer[start..start + source.len()].copy_from_slice(source);
+        Ok(())
+    }
+
+    fn copy_from_device(
+        &self,
+        address: u64,
+        destination: &mut [u8],
+    ) -> std::result::Result<(), CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.copy_from_device_calls += 1;
+        if let Some(error) = &state.copy_from_device_error {
+            return Err(error.clone());
+        }
+        let length = u64::try_from(destination.len()).expect("test buffer length fits u64");
+        let end = address.checked_add(length).ok_or_else(|| CudaError::new(700))?;
+        let Some((base, buffer)) = state.device_buffers.iter().find(|(base, buffer)| {
+            address >= *base
+                && end <= base.saturating_add(u64::try_from(buffer.len()).unwrap())
+        }) else {
+            return Err(CudaError::new(700));
+        };
+        let start = usize::try_from(address - *base).expect("test offset fits usize");
+        destination.copy_from_slice(&buffer[start..start + destination.len()]);
+        Ok(())
+    }
+
     fn allocate_memory(&self, size_bytes: usize) -> std::result::Result<u64, CudaError> {
         let mut state = self.state.lock().expect("mock state lock");
         state.allocation_calls += 1;
@@ -136,6 +187,7 @@ impl CudaApi for MockCudaApi {
         }
         let address = 0x10000 + (state.allocation_calls as u64 * 0x1000) + size_bytes as u64;
         state.allocated_addresses.push(address);
+        state.device_buffers.push((address, vec![0; size_bytes]));
         Ok(address)
     }
 
