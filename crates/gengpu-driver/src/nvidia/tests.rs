@@ -1325,13 +1325,13 @@ fn ptx_module_loads_inside_and_restores_owning_context() {
     let (driver, api) = initialized_driver();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let mut module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
 
     {
         let state = api.state.lock().unwrap();
         assert_eq!(state.module_load_calls, 1);
-        assert_eq!(state.loaded_ptx.as_deref(), Some(".version 7.0\\n.target sm_50"));
+        assert_eq!(state.loaded_ptx.as_deref(), Some(".version 7.0\n.target sm_50"));
         assert!(state.context_stack.is_empty());
         assert_eq!(state.push_calls, 1);
         assert_eq!(state.pop_calls, 1);
@@ -1355,7 +1355,7 @@ fn ptx_module_load_failure_restores_context_and_translates_error() {
     let context = driver.create_context(DeviceId::new(0)).unwrap();
 
     let error = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .err()
         .expect("module load failure must be returned");
 
@@ -1380,7 +1380,7 @@ fn ptx_module_is_cleaned_up_when_context_restoration_fails_after_load() {
     }
 
     let error = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .err()
         .expect("context restoration failure must be returned");
 
@@ -1398,7 +1398,7 @@ fn module_function_lookup_returns_an_opaque_backend_handle() {
     let (driver, api) = initialized_driver();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let mut module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
 
     let function = module.get_function("kernel_entry").unwrap();
@@ -1422,7 +1422,7 @@ fn module_function_lookup_rejects_invalid_names_before_cuda_call() {
     let (driver, api) = initialized_driver();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
 
     let empty = module
@@ -1430,7 +1430,7 @@ fn module_function_lookup_rejects_invalid_names_before_cuda_call() {
         .err()
         .expect("empty function name must be rejected");
     let embedded_nul = module
-        .get_function("kernel\\0suffix")
+        .get_function("kernel\0suffix")
         .err()
         .expect("embedded NUL must be rejected");
 
@@ -1452,7 +1452,7 @@ fn missing_module_function_maps_cuda_not_found_to_gen_gpu_not_found() {
     driver.initialize().unwrap();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
 
     let error = module
@@ -1480,7 +1480,7 @@ fn module_function_lookup_preserves_driver_errors_and_restores_context() {
     driver.initialize().unwrap();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
 
     let error = module
@@ -1502,7 +1502,7 @@ fn function_lookup_reports_context_restoration_failure_after_retry() {
     let (driver, api) = initialized_driver();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
     {
         let mut state = api.state.lock().unwrap();
