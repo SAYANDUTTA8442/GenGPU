@@ -63,4 +63,4 @@ Distinguish facts from assumptions. Cite external specifications or documentatio
 ## Current records
 
 - [ADR-0001: Context Ownership and Threading](0001-context-ownership-and-threading.md) — Accepted. Defines context ownership, backend lifetime, scoped current-context behavior, and initial thread-safety constraints.
-- [ADR-0002: Synchronous Host–Device Memory Transfers](0002-synchronous-host-device-transfers.md) — Proposed. Defines borrowed-buffer transfer APIs, exact context ownership checks, bounds validation, synchronous completion, and error semantics.
+- [ADR-0002: Synchronous Host–Device Memory Transfers](0002-synchronous-host-device-transfers.md) — Accepted. Defines borrowed-buffer transfer APIs, exact context ownership checks, bounds validation, synchronous completion, and error semantics.
