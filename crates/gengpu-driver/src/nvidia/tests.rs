@@ -1370,7 +1370,7 @@ fn ptx_module_load_failure_restores_context_and_translates_error() {
 }
 
 #[test]
-fn ptx_module_is_cleaned_up_when_context_restoration_fails_after_load() {
+fn ptx_module_is_left_for_context_reclamation_when_restoration_fails_after_load() {
     let (driver, api) = initialized_driver();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     {
@@ -1387,9 +1387,9 @@ fn ptx_module_is_cleaned_up_when_context_restoration_fails_after_load() {
     assert_eq!(error.kind(), ErrorKind::Driver);
     let state = api.state.lock().unwrap();
     assert_eq!(state.module_load_calls, 1);
-    assert_eq!(state.module_unload_calls, 1);
-    assert_eq!(state.push_calls, 2);
-    assert_eq!(state.pop_calls, 3);
+    assert_eq!(state.module_unload_calls, 0);
+    assert_eq!(state.push_calls, 1);
+    assert_eq!(state.pop_calls, 2);
     assert!(state.context_stack.is_empty());
 }
 
