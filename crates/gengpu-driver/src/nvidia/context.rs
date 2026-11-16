@@ -16,11 +16,11 @@ use super::api::CudaApi;
 use super::driver::cuda_error;
 use super::module::NvidiaModule;
 
-/// Shared native context state retained by every live allocation.
+/// Shared native context state retained by every live allocation and module.
 ///
-/// The native context is destroyed when the public context and all allocation
-/// owners release this state. Explicit close is permitted only when no device
-/// allocations remain live.
+/// The native context is destroyed when the public context and all resource
+/// owners release this state. Explicit close is permitted only when no
+/// caller-owned allocations or modules remain live.
 pub(super) struct ContextInner {
     api: Arc<dyn CudaApi>,
     handle: Mutex<Option<usize>>,
@@ -245,11 +245,11 @@ impl Drop for ContextInner {
         let native_handle = self.handle.get_mut().ok().and_then(|handle| *handle);
 
         if let Some(native_handle) = native_handle {
-            // Every returned allocation retains this ContextInner. Any
-            // allocation whose Drop cleanup failed is first transferred
-            // to the orphan registry and no longer owns a separate Arc.
-            // CUDA context destruction is the final reclamation boundary
-            // if best-effort explicit frees still fail here.
+            // Every returned allocation or module retains this ContextInner.
+            // Failed Drop cleanup is first transferred to the appropriate
+            // orphan registry and no longer owns a separate Arc. CUDA context
+            // destruction is the final reclamation boundary if individual
+            // best-effort releases still fail here.
             let _ = self.cleanup_orphaned_modules(native_handle);
             let _ = self.cleanup_orphaned_allocations(native_handle);
             let _ = self.api.destroy_context(native_handle);
@@ -264,7 +264,8 @@ impl Drop for ContextInner {
 /// Public NVIDIA context wrapper.
 ///
 /// Cell makes this type !Sync while preserving Send, matching the public
-/// Context contract. Device allocations retain ContextInner independently.
+/// Context contract. Device allocations and PTX modules retain ContextInner
+/// independently.
 pub(super) struct NvidiaContext {
     inner: Arc<ContextInner>,
     device_id: DeviceId,
