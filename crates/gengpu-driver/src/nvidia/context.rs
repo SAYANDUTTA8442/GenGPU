@@ -177,23 +177,15 @@ impl Context for NvidiaContext {
                 return Err(combine_errors(error, restore_error, "restoring context after allocation"));
             }
             (Ok(address), Err(restore_error)) => {
-                // The allocation exists. Make a best-effort second attempt to
-                // restore the stack; if it remains current, free it directly.
-                if self.inner.api.pop_current().is_err() {
-                    let free_result = self
-                        .inner
-                        .api
-                        .free_memory(address)
-                        .map_err(|error| cuda_error("cuMemFree_v2", error));
-                    if let Err(free_error) = free_result {
-                        return Err(combine_errors(
-                            restore_error,
-                            free_error,
-                            "cleaning up an allocation after context restoration failed",
-                        ));
-                    }
-                }
-                return Err(restore_error);
+                let cleanup = cleanup_unreturned_allocation(&self.inner, handle, address);
+                return match cleanup {
+                    Ok(()) => Err(restore_error),
+                    Err(cleanup_error) => Err(combine_errors(
+                        restore_error,
+                        cleanup_error,
+                        "cleaning up an allocation after context restoration failed",
+                    )),
+                };
             }
         };
 
@@ -257,6 +249,33 @@ fn pop_expected_context(api: &Arc<dyn CudaApi>, expected: usize) -> Result<()> {
             ))?;
     }
     Err(mismatch)
+}
+
+fn cleanup_unreturned_allocation(
+    inner: &Arc<ContextInner>,
+    handle: usize,
+    address: u64,
+) -> Result<()> {
+    inner
+        .api
+        .push_current(handle)
+        .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
+    let free_result = inner
+        .api
+        .free_memory(address)
+        .map_err(|error| cuda_error("cuMemFree_v2", error));
+    let restore_result = pop_expected_context(&inner.api, handle);
+
+    match (free_result, restore_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Err(free_error), Err(restore_error)) => Err(combine_errors(
+            free_error,
+            restore_error,
+            "restoring context after cleanup of an unreturned allocation",
+        )),
+    }
 }
 
 fn release_allocation(inner: &Arc<ContextInner>, address: u64) -> CleanupOutcome {
