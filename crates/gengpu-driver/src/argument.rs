@@ -126,7 +126,7 @@ impl<'a> KernelArg<'a> {
 mod tests {
     use super::KernelArg;
     use crate::{DeviceAddress, DeviceAllocation};
-    use gengpu_core::{DeviceId, Error, ErrorKind};
+    use gengpu_core::{DeviceId, ErrorKind};
     use std::any::Any;
     use std::sync::Arc;
 
@@ -174,8 +174,8 @@ mod tests {
         let mut allocation = allocation(false);
         allocation.deallocate().unwrap();
 
-        let error = KernelArg::device_ptr(&mut allocation).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::InvalidState);
+        let result = KernelArg::device_ptr(&mut allocation);
+        assert!(matches!(result, Err(error) if error.kind() == ErrorKind::InvalidState));
     }
 
     #[test]
