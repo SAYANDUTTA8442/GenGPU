@@ -251,6 +251,23 @@ fn pop_expected_context(api: &Arc<dyn CudaApi>, expected: usize) -> Result<()> {
     Err(mismatch)
 }
 
+fn pop_expected_context_retry(api: &Arc<dyn CudaApi>, expected: usize) -> Result<()> {
+    match pop_expected_context(api, expected) {
+        Ok(()) => Ok(()),
+        Err(first_error) if first_error.kind() == ErrorKind::Driver => {
+            match pop_expected_context(api, expected) {
+                Ok(()) => Err(first_error),
+                Err(second_error) => Err(combine_errors(
+                    first_error,
+                    second_error,
+                    "retrying context restoration",
+                )),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn cleanup_unreturned_allocation(
     inner: &Arc<ContextInner>,
     handle: usize,
@@ -264,7 +281,7 @@ fn cleanup_unreturned_allocation(
         .api
         .free_memory(address)
         .map_err(|error| cuda_error("cuMemFree_v2", error));
-    let restore_result = pop_expected_context(&inner.api, handle);
+    let restore_result = pop_expected_context_retry(&inner.api, handle);
 
     match (free_result, restore_result) {
         (Ok(()), Ok(())) => Ok(()),
