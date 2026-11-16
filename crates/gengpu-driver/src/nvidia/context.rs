@@ -122,7 +122,18 @@ impl ContextInner {
             ));
         }
 
-        let native_handle = self.handle()?;
+        let native_handle = {
+            let handle = self.handle.lock().map_err(|_| {
+                Error::new(
+                    ErrorKind::Internal,
+                    "NVIDIA context handle mutex is poisoned",
+                )
+            })?;
+            match *handle {
+                Some(native_handle) => native_handle,
+                None => return Ok(()),
+            }
+        };
         self.cleanup_orphaned_allocations(native_handle)?;
 
         let mut handle = self.handle.lock().map_err(|_| {
