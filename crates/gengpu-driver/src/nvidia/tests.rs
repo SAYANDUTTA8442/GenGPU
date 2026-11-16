@@ -861,12 +861,10 @@ fn successful_free_is_not_retried_when_context_restoration_needs_retry() {
             name: String::from("GPU A"),
             total_memory_bytes: 1024,
         }],
-        pop_error: Some(CudaError::new(709)),
-        pop_error_remaining: 1,
         ..MockState::default()
     });
     driver.initialize().unwrap();
-    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
     let mut allocation = context.allocate(96).unwrap();
     {
         let mut state = api.state.lock().unwrap();
