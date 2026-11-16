@@ -553,7 +553,10 @@ fn failed_push_does_not_create_a_guard_or_call_synchronization() {
     driver.initialize().unwrap();
     let mut context = driver.create_context(DeviceId::new(0)).unwrap();
 
-    let error = context.make_current().unwrap_err();
+    let error = context
+        .make_current()
+        .err()
+        .expect("context activation should fail");
 
     assert_eq!(error.kind(), ErrorKind::Driver);
     let state = api.state.lock().unwrap();
