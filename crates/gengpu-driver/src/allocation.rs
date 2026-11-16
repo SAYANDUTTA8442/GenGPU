@@ -152,7 +152,10 @@ mod tests {
             || Ok(()),
         );
 
-        assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidArgument);
+        assert_eq!(
+            result.err().expect("zero-byte allocation must fail").kind(),
+            ErrorKind::InvalidArgument
+        );
     }
 
     #[test]
