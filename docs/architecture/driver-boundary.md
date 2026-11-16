@@ -139,8 +139,9 @@ PH1-007C3.
   ErrorKind::NotFound. Other native lookup and load failures are translated
   to ErrorKind::Driver with CUDA operation diagnostics.
 - Module loading and function lookup restore the caller's previous
-  current-context stack. If loading succeeds but restoration fails, GenGPU
-  attempts to unload the unreturned module before returning the error.
+  current-context stack. If loading succeeds but restoration fails, the
+  module is not returned; the owning context remains its reclamation boundary.
+  PH1-007C3 adds explicit orphan tracking for this path.
 - A KernelFunction stores an opaque backend handle and carries a Rust borrow
   tied to its Module. The function handle therefore cannot outlive the module,
   and the module cannot be mutably unloaded while a function borrow is live.
