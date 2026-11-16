@@ -1668,7 +1668,7 @@ fn module_load_and_function_lookup_preserve_an_existing_current_context() {
 
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let mut module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
     let function = module.get_function("kernel_entry").unwrap();
     drop(function);
