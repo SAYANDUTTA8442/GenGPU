@@ -1693,7 +1693,6 @@ fn invalid_ptx_is_rejected_before_nvidia_context_activation() {
     assert_eq!(state.push_calls, 0);
 }
 
-
 #[test]
 fn live_module_prevents_explicit_context_close_until_unloaded() {
     let (driver, api) = initialized_driver();
