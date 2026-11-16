@@ -1,6 +1,6 @@
 # ADR-0002: Synchronous Host–Device Memory Transfers
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-16
 - **Decision owners:** GenGPU maintainers
 - **Related ADRs:** [ADR-0001: Context Ownership and Threading](0001-context-ownership-and-threading.md)
