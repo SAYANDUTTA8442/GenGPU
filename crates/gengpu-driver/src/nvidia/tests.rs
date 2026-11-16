@@ -248,11 +248,7 @@ impl CudaApi for MockCudaApi {
         Ok(())
     }
 
-    fn get_function(
-        &self,
-        _module: usize,
-        name: &CStr,
-    ) -> std::result::Result<usize, CudaError> {
+    fn get_function(&self, _module: usize, name: &CStr) -> std::result::Result<usize, CudaError> {
         let mut state = self.state.lock().expect("mock state lock");
         state.function_lookup_calls += 1;
         state.looked_up_function = Some(name.to_string_lossy().into_owned());
