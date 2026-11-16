@@ -17,8 +17,8 @@ pub trait Context: Send {
     /// Makes this context current on the calling thread for the lifetime of
     /// the returned guard.
     ///
-    /// The guard is thread-bound and must restore the previously current
-    /// context when explicitly finished or dropped.
+    /// The mutable borrow held by the guard prevents this context from being
+    /// closed or activated again until the guard is finished or dropped.
     fn make_current(&mut self) -> Result<CurrentContextGuard<'_>>;
 
     /// Synchronizes this context without changing the caller's observable
@@ -38,24 +38,30 @@ pub trait Context: Send {
 
 /// A scoped association between a context and the calling host thread.
 ///
-/// The guard is deliberately neither Send nor Sync. Its cleanup callback is
-/// retained after a failed explicit finish so Drop can make a best-effort
-/// second attempt to restore the thread's previous current context.
+/// The guard holds an exclusive borrow of its context, so the context cannot
+/// be closed or mutably used while the guard is alive. It is deliberately
+/// neither Send nor Sync. Its cleanup callback is retained after a failed
+/// explicit finish so Drop can make a best-effort second attempt to restore
+/// the thread's previous current context.
 pub struct CurrentContextGuard<'a> {
     cleanup: Option<Box<dyn FnMut() -> Result<()> + 'a>>,
+    _context_borrow: PhantomData<&'a mut ()>,
     _thread_bound: PhantomData<Rc<()>>,
 }
 
 impl<'a> CurrentContextGuard<'a> {
-    /// Creates a guard with backend-provided cleanup.
+    /// Creates a guard with backend-provided cleanup while exclusively
+    /// borrowing the associated context for the guard's lifetime.
     ///
     /// This constructor is crate-private: external callers obtain guards only
     /// through Context::make_current.
-    // Used by backend implementations beginning in PH1-004C.
-    #[allow(dead_code)]
-    pub(crate) fn new(cleanup: impl FnMut() -> Result<()> + 'a) -> Self {
+    pub(crate) fn new<T: ?Sized>(
+        _context: &'a mut T,
+        cleanup: impl FnMut() -> Result<()> + 'a,
+    ) -> Self {
         Self {
             cleanup: Some(Box::new(cleanup)),
+            _context_borrow: PhantomData,
             _thread_bound: PhantomData,
         }
     }
@@ -99,7 +105,8 @@ mod tests {
     fn finishing_guard_runs_cleanup_once() {
         let attempts = Rc::new(Cell::new(0));
         let observed = Rc::clone(&attempts);
-        let guard = CurrentContextGuard::new(move || {
+        let mut context = ();
+        let guard = CurrentContextGuard::new(&mut context, move || {
             observed.set(observed.get() + 1);
             Ok(())
         });
@@ -112,7 +119,8 @@ mod tests {
     fn dropping_guard_runs_best_effort_cleanup() {
         let attempts = Rc::new(Cell::new(0));
         let observed = Rc::clone(&attempts);
-        let guard = CurrentContextGuard::new(move || {
+        let mut context = ();
+        let guard = CurrentContextGuard::new(&mut context, move || {
             observed.set(observed.get() + 1);
             Ok(())
         });
@@ -125,7 +133,8 @@ mod tests {
     fn failed_finish_retains_cleanup_for_drop_retry() {
         let attempts = Rc::new(Cell::new(0));
         let observed = Rc::clone(&attempts);
-        let guard = CurrentContextGuard::new(move || {
+        let mut context = ();
+        let guard = CurrentContextGuard::new(&mut context, move || {
             observed.set(observed.get() + 1);
             if observed.get() == 1 {
                 Err(Error::new(ErrorKind::Driver, "simulated pop failure"))
