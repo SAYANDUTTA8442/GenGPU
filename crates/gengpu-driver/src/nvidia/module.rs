@@ -46,6 +46,19 @@ impl NvidiaModule {
             .ok_or_else(|| Error::new(ErrorKind::InvalidState, "NVIDIA module is unloaded"))
     }
 
+    fn mark_unloaded(&mut self) {
+        let released = {
+            let handle = self
+                .handle
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            handle.take().is_some()
+        };
+        if released {
+            self.inner.module_released();
+        }
+    }
+
     fn unload_native(&mut self) -> Result<()> {
         let module_handle = {
             let handle = self.handle.lock().map_err(|_| {
@@ -72,24 +85,14 @@ impl NvidiaModule {
 
         match (unload_result, restoration) {
             (Ok(()), Ok(())) => {
-                *self.handle.lock().map_err(|_| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        "NVIDIA module handle mutex is poisoned",
-                    )
-                })? = None;
+                self.mark_unloaded();
                 Ok(())
             }
             (Err(error), Ok(())) => Err(error),
             (Ok(()), Err(error)) => {
                 // The module is already released. Never retry unload merely
                 // because restoring the caller's context stack failed.
-                *self.handle.lock().map_err(|_| {
-                    Error::new(
-                        ErrorKind::Internal,
-                        "NVIDIA module handle mutex is poisoned",
-                    )
-                })? = None;
+                self.mark_unloaded();
                 Err(error)
             }
             (Err(error), Err(restore_error)) => Err(combine_errors(
@@ -160,9 +163,20 @@ impl Module for NvidiaModule {
 
 impl Drop for NvidiaModule {
     fn drop(&mut self) {
-        // C3 adds context-owned orphan tracking for failed module cleanup.
-        // Until then, context destruction remains the final reclamation
-        // boundary if this best-effort unload cannot release the module.
         let _ = self.unload_native();
+
+        // If native unload still failed, transfer cleanup responsibility to
+        // ContextInner before decrementing the live-module count. Context
+        // close can then retry the unload without losing the native handle.
+        let orphan = {
+            let handle = self
+                .handle
+                .get_mut()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            handle.take()
+        };
+        if let Some(module) = orphan {
+            self.inner.register_orphaned_module(module, true);
+        }
     }
 }
