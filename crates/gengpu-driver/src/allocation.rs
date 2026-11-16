@@ -19,7 +19,7 @@ impl DeviceAddress {
         self.0
     }
 
-    pub(crate) fn from_raw(value: u64) -> Self {
+    // Used by concrete backend implementations introduced in PH1-005C.\n    #[allow(dead_code)]\n    pub(crate) fn from_raw(value: u64) -> Self {
         Self(value)
     }
 }
