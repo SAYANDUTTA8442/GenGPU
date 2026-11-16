@@ -910,3 +910,111 @@ fn allocation_is_freed_when_initial_context_restoration_requires_retry() {
     assert!(state.context_stack.is_empty());
     assert_eq!(state.pop_calls, 3);
 }
+
+
+#[test]
+fn dropped_allocation_transfers_failed_free_to_context_for_close_retry() {
+    let (driver, api) = initialized_driver();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    let allocation = context.allocate(128).unwrap();
+    let address = allocation.device_address().as_u64();
+
+    api.state.lock().unwrap().free_error = Some(CudaError::new(709));
+    drop(allocation);
+
+    {
+        let state = api.state.lock().unwrap();
+        assert_eq!(state.free_calls, 1);
+        assert!(state.freed_addresses.is_empty());
+        assert_eq!(state.context_destroy_calls, 0);
+    }
+
+    api.state.lock().unwrap().free_error = None;
+    context.close().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.free_calls, 2);
+    assert_eq!(state.freed_addresses, vec![address]);
+    assert_eq!(state.context_destroy_calls, 1);
+}
+
+#[test]
+fn context_close_retains_orphan_after_free_failure_for_later_retry() {
+    let (driver, api) = initialized_driver();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    let allocation = context.allocate(256).unwrap();
+
+    api.state.lock().unwrap().free_error = Some(CudaError::new(709));
+    drop(allocation);
+
+    assert_eq!(context.close().unwrap_err().kind(), ErrorKind::Driver);
+    assert_eq!(api.state.lock().unwrap().context_destroy_calls, 0);
+
+    api.state.lock().unwrap().free_error = None;
+    context.close().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.free_calls, 3);
+    assert_eq!(state.freed_addresses.len(), 1);
+    assert_eq!(state.context_destroy_calls, 1);
+}
+
+#[test]
+fn dropping_context_releases_orphaned_allocations_before_destroying_context() {
+    let (driver, api) = initialized_driver();
+    let allocation = {
+        let context = driver.create_context(DeviceId::new(0)).unwrap();
+        let allocation = context.allocate(512).unwrap();
+        api.state.lock().unwrap().free_error = Some(CudaError::new(709));
+        drop(allocation);
+        context
+    };
+
+    drop(allocation);
+
+    let state = api.state.lock().unwrap();
+    // The context Drop path retries the orphan free, then destroys the
+    // context as the final CUDA resource-reclamation boundary.
+    assert_eq!(state.free_calls, 2);
+    assert!(state.freed_addresses.is_empty());
+    assert_eq!(state.context_destroy_calls, 1);
+    drop(state);
+}
+
+#[test]
+fn failed_cleanup_of_unreturned_allocation_is_tracked_by_context() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        pop_error: Some(CudaError::new(709)),
+        pop_error_remaining: 1,
+        free_error: Some(CudaError::new(2)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context
+        .allocate(80)
+        .err()
+        .expect("allocation should report failed restoration and cleanup");
+    assert_eq!(error.kind(), ErrorKind::Driver);
+
+    {
+        let state = api.state.lock().unwrap();
+        assert_eq!(state.allocation_calls, 1);
+        assert_eq!(state.free_calls, 1);
+        assert!(state.freed_addresses.is_empty());
+        assert_eq!(state.context_destroy_calls, 0);
+    }
+
+    api.state.lock().unwrap().free_error = None;
+    context.close().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.free_calls, 2);
+    assert_eq!(state.freed_addresses.len(), 1);
+    assert_eq!(state.context_destroy_calls, 1);
+}
