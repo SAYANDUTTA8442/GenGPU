@@ -32,6 +32,30 @@ pub trait Module: Send {
 /// may retrieve their own handle type with backend_handle. The module
 /// borrow prevents safe code from retaining this function after the module
 /// has been dropped. This type is neither Send nor Sync.
+///
+/// The borrow is enforced by the Rust type system:
+///
+/// ```compile_fail
+/// use gengpu_core::Result;
+/// use gengpu_driver::{KernelFunction, Module};
+///
+/// struct FakeModule;
+///
+/// impl Module for FakeModule {
+///     fn get_function<'a>(&'a self, _name: &str) -> Result<KernelFunction<'a>> {
+///         Ok(KernelFunction::from_backend_handle(self, 7_u64))
+///     }
+///
+///     fn unload(&mut self) -> Result<()> {
+///         Ok(())
+///     }
+/// }
+///
+/// fn invalid() -> KernelFunction<'static> {
+///     let module = FakeModule;
+///     module.get_function("entry").unwrap()
+/// }
+/// ```
 pub struct KernelFunction<'module> {
     backend_handle: Box<dyn Any + Send + Sync>,
     _module_borrow: PhantomData<&'module dyn Module>,
