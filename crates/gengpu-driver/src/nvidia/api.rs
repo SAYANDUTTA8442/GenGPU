@@ -39,6 +39,8 @@ pub(super) trait CudaApi: Send + Sync {
     fn push_current(&self, handle: usize) -> std::result::Result<(), CudaError>;
     fn pop_current(&self) -> std::result::Result<usize, CudaError>;
     fn synchronize(&self) -> std::result::Result<(), CudaError>;
+    fn copy_to_device(&self, address: u64, source: &[u8]) -> std::result::Result<(), CudaError>;
+    fn copy_from_device(&self, address: u64, destination: &mut [u8]) -> std::result::Result<(), CudaError>;
     fn allocate_memory(&self, size_bytes: usize) -> std::result::Result<u64, CudaError>;
     fn free_memory(&self, address: u64) -> std::result::Result<(), CudaError>;
 }
