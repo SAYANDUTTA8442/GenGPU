@@ -115,9 +115,7 @@ impl<'a> KernelArg<'a> {
     pub(crate) fn kernel_param_ptr(&self) -> *mut c_void {
         match &self.value {
             KernelArgValue::Scalar(pointer) => *pointer,
-            KernelArgValue::DevicePointer { address, .. } => {
-                address as *const u64 as *mut c_void
-            }
+            KernelArgValue::DevicePointer { address, .. } => address as *const u64 as *mut c_void,
         }
     }
 }
