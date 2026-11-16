@@ -699,11 +699,7 @@ fn cleanup_unreturned_allocation(
     }
 }
 
-fn release_orphaned_module(
-    api: &Arc<dyn CudaApi>,
-    handle: usize,
-    module: usize,
-) -> CleanupOutcome {
+fn release_orphaned_module(api: &Arc<dyn CudaApi>, handle: usize, module: usize) -> CleanupOutcome {
     if let Err(error) = api.push_current(handle) {
         return CleanupOutcome::Retain(cuda_error("cuCtxPushCurrent_v2", error));
     }
