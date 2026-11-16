@@ -137,9 +137,7 @@ mod tests {
 
     use super::{CleanupOutcome, DeviceAddress, DeviceAllocation};
 
-    fn allocation(
-        cleanup: impl FnMut() -> CleanupOutcome + Send + 'static,
-    ) -> DeviceAllocation {
+    fn allocation(cleanup: impl FnMut() -> CleanupOutcome + Send + 'static) -> DeviceAllocation {
         DeviceAllocation::new(
             DeviceId::new(3),
             DeviceAddress::from_raw(0xCAFE),
@@ -200,10 +198,7 @@ mod tests {
             let mut calls = observed.lock().unwrap();
             *calls += 1;
             if *calls == 1 {
-                CleanupOutcome::Retain(Error::new(
-                    ErrorKind::Driver,
-                    "simulated free failure",
-                ))
+                CleanupOutcome::Retain(Error::new(ErrorKind::Driver, "simulated free failure"))
             } else {
                 CleanupOutcome::Released(Ok(()))
             }
@@ -259,10 +254,7 @@ mod tests {
         let observed = Arc::clone(&calls);
         drop(allocation(move || {
             *observed.lock().unwrap() += 1;
-            CleanupOutcome::Retain(Error::new(
-                ErrorKind::Driver,
-                "simulated free failure",
-            ))
+            CleanupOutcome::Retain(Error::new(ErrorKind::Driver, "simulated free failure"))
         }));
 
         assert_eq!(*calls.lock().unwrap(), 1);
