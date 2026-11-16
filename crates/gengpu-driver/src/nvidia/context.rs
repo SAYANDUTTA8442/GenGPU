@@ -189,11 +189,32 @@ impl Context for NvidiaContext {
                 ));
             }
             (Ok(address), Err(restore_error)) => {
+                // If the first pop failed without changing the stack, retry
+                // it before pushing the context again for allocation cleanup.
+                let recovery = if restore_error.kind() == ErrorKind::Driver {
+                    pop_expected_context(&self.inner.api, handle)
+                } else {
+                    Err(restore_error.clone())
+                };
                 let cleanup = cleanup_unreturned_allocation(&self.inner, handle, address);
-                return match cleanup {
-                    Ok(()) => Err(restore_error),
-                    Err(cleanup_error) => Err(combine_errors(
+                return match (recovery, cleanup) {
+                    (Ok(()), Ok(())) => Err(restore_error),
+                    (Err(recovery_error), Ok(())) => Err(combine_errors(
                         restore_error,
+                        recovery_error,
+                        "retrying context restoration",
+                    )),
+                    (Ok(()), Err(cleanup_error)) => Err(combine_errors(
+                        restore_error,
+                        cleanup_error,
+                        "cleaning up an allocation after context restoration failed",
+                    )),
+                    (Err(recovery_error), Err(cleanup_error)) => Err(combine_errors(
+                        combine_errors(
+                            restore_error,
+                            recovery_error,
+                            "retrying context restoration",
+                        ),
                         cleanup_error,
                         "cleaning up an allocation after context restoration failed",
                     )),
