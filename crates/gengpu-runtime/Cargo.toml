@@ -1,0 +1,8 @@
+[package]
+name = "gengpu-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "GPU runtime abstractions for GenGPU."
+license = "Apache-2.0"
+
+[dependencies]

@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/gengpu-core",
+    "crates/gengpu-driver",
+    "crates/gengpu-runtime",
+]
+resolver = "2"
