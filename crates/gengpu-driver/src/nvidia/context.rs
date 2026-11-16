@@ -320,7 +320,7 @@ fn release_allocation(inner: &Arc<ContextInner>, address: u64) -> CleanupOutcome
         .api
         .free_memory(address)
         .map_err(|error| cuda_error("cuMemFree_v2", error));
-    let restore_result = pop_expected_context(&inner.api, handle);
+    let restore_result = pop_expected_context_retry(&inner.api, handle);
 
     match (free_result, restore_result) {
         (Ok(()), Ok(())) => {
