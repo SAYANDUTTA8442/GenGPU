@@ -121,11 +121,13 @@ impl Module for NvidiaModule {
             .get_function(module_handle, &name)
             .map_err(|error| {
                 if error.code == CUDA_ERROR_NOT_FOUND {
+                    let diagnostic = cuda_error("cuModuleGetFunction", error);
                     Error::new(
                         ErrorKind::NotFound,
                         format!(
-                            "kernel function '{}' was not found in the NVIDIA module",
-                            name.to_string_lossy()
+                            "kernel function '{}' was not found in the NVIDIA module: {}",
+                            name.to_string_lossy(),
+                            diagnostic.message()
                         ),
                     )
                 } else {
