@@ -249,6 +249,59 @@ mod tests {
     }
 
     #[test]
+    fn drop_transfers_failed_cleanup_to_the_owner() {
+        let cleanup_calls = Arc::new(Mutex::new(0));
+        let observed_cleanup = Arc::clone(&cleanup_calls);
+        let orphan_calls = Arc::new(Mutex::new(0));
+        let observed_orphan = Arc::clone(&orphan_calls);
+
+        drop(
+            DeviceAllocation::new(
+                DeviceId::new(3),
+                DeviceAddress::from_raw(0xCAFE),
+                4096,
+                Arc::new(()),
+                move || {
+                    *observed_cleanup.lock().unwrap() += 1;
+                    CleanupOutcome::Retain(Error::new(
+                        ErrorKind::Driver,
+                        "simulated persistent free failure",
+                    ))
+                },
+                move || {
+                    *observed_orphan.lock().unwrap() += 1;
+                },
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(*cleanup_calls.lock().unwrap(), 1);
+        assert_eq!(*orphan_calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn successful_drop_does_not_transfer_cleanup_to_the_owner() {
+        let orphan_calls = Arc::new(Mutex::new(0));
+        let observed_orphan = Arc::clone(&orphan_calls);
+
+        drop(
+            DeviceAllocation::new(
+                DeviceId::new(3),
+                DeviceAddress::from_raw(0xCAFE),
+                4096,
+                Arc::new(()),
+                || CleanupOutcome::Released(Ok(())),
+                move || {
+                    *observed_orphan.lock().unwrap() += 1;
+                },
+            )
+            .unwrap(),
+        );
+
+        assert_eq!(*orphan_calls.lock().unwrap(), 0);
+    }
+
+    #[test]
     fn drop_attempts_best_effort_cleanup_once() {
         let calls = Arc::new(Mutex::new(0));
         let observed = Arc::clone(&calls);
