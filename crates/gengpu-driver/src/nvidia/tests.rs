@@ -1583,3 +1583,78 @@ fn missing_function_error_remains_primary_when_context_restoration_fails() {
     assert_eq!(state.function_lookup_calls, 1);
     assert!(state.context_stack.is_empty());
 }
+
+#[test]
+fn module_retains_context_after_public_context_wrapper_is_dropped() {
+    let (driver, api) = initialized_driver();
+    let mut module = {
+        let context = driver.create_context(DeviceId::new(0)).unwrap();
+        context
+            .load_ptx(".version 7.0\\n.target sm_50")
+            .unwrap()
+    };
+
+    assert_eq!(api.state.lock().unwrap().context_destroy_calls, 0);
+    let function = module.get_function("kernel_entry").unwrap();
+    drop(function);
+    module.unload().unwrap();
+    drop(module);
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_unload_calls, 1);
+    assert_eq!(state.context_destroy_calls, 1);
+}
+
+#[test]
+fn failed_explicit_module_unload_retains_handle_for_retry() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        module_unload_error: Some(CudaError::new(700)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+
+    let error = module.unload().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(api.state.lock().unwrap().unloaded_modules.is_empty());
+
+    api.state.lock().unwrap().module_unload_error = None;
+    module.unload().unwrap();
+    module.unload().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_unload_calls, 2);
+    assert_eq!(state.unloaded_modules.len(), 1);
+}
+
+#[test]
+fn successful_module_unload_is_not_repeated_after_context_restore_failure() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+    {
+        let mut state = api.state.lock().unwrap();
+        state.pop_error = Some(CudaError::new(709));
+        state.pop_error_remaining = 1;
+    }
+
+    let error = module.unload().unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Driver);
+
+    module.unload().unwrap();
+    drop(module);
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_unload_calls, 1);
+    assert_eq!(state.unloaded_modules.len(), 1);
+    assert!(state.context_stack.is_empty());
+}
