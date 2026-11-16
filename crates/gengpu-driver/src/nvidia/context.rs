@@ -1,23 +1,88 @@
-//! NVIDIA-owned execution context resources.
+//! NVIDIA-owned execution context and device-memory resources.
 
+use std::any::Any;
 use std::cell::Cell;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use gengpu_core::{DeviceId, Error, ErrorKind, Result};
 
-use crate::{Context, CurrentContextGuard};
+use crate::allocation::CleanupOutcome;
+use crate::{Context, CurrentContextGuard, DeviceAddress, DeviceAllocation};
 
 use super::api::CudaApi;
 use super::driver::cuda_error;
 
-/// NVIDIA context retaining the CUDA API/library for its full lifetime.
+/// Shared native context state retained by every live allocation.
+///
+/// The native context is destroyed when the public context and all allocation
+/// owners release this state. Explicit close is permitted only when no device
+/// allocations remain live.
+pub(super) struct ContextInner {
+    api: Arc<dyn CudaApi>,
+    handle: Mutex<Option<usize>>,
+    live_allocations: AtomicUsize,
+}
+
+impl ContextInner {
+    pub(super) fn new(api: Arc<dyn CudaApi>, handle: usize) -> Self {
+        Self {
+            api,
+            handle: Mutex::new(Some(handle)),
+            live_allocations: AtomicUsize::new(0),
+        }
+    }
+
+    fn handle(&self) -> Result<usize> {
+        self.handle
+            .lock()
+            .map_err(|_| Error::new(ErrorKind::Internal, "NVIDIA context handle mutex is poisoned"))?
+            .ok_or_else(|| Error::new(ErrorKind::InvalidState, "NVIDIA context is already closed"))
+    }
+
+    fn close(&self) -> Result<()> {
+        if self.live_allocations.load(Ordering::Acquire) != 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidState,
+                "cannot close an NVIDIA context while device allocations remain live",
+            ));
+        }
+
+        let mut handle = self.handle.lock().map_err(|_| {
+            Error::new(ErrorKind::Internal, "NVIDIA context handle mutex is poisoned")
+        })?;
+        let Some(native_handle) = *handle else {
+            return Ok(());
+        };
+
+        self.api
+            .destroy_context(native_handle)
+            .map_err(|error| cuda_error("cuCtxDestroy_v2", error))?;
+        *handle = None;
+        Ok(())
+    }
+}
+
+impl Drop for ContextInner {
+    fn drop(&mut self) {
+        if let Ok(handle) = self.handle.get_mut() {
+            if let Some(native_handle) = *handle {
+                // Every live allocation owns an Arc<ContextInner>, so this
+                // final drop cannot occur while a tracked allocation is live.
+                let _ = self.api.destroy_context(native_handle);
+                *handle = None;
+            }
+        }
+    }
+}
+
+/// Public NVIDIA context wrapper.
 ///
 /// Cell makes this type !Sync while preserving Send, matching the public
-/// Context contract. The native CUDA handle never crosses the driver crate.
+/// Context contract. Device allocations retain ContextInner independently.
 pub(super) struct NvidiaContext {
-    api: Arc<dyn CudaApi>,
-    handle: Option<usize>,
+    inner: Arc<ContextInner>,
     device_id: DeviceId,
     _not_sync: PhantomData<Cell<()>>,
 }
@@ -25,16 +90,14 @@ pub(super) struct NvidiaContext {
 impl NvidiaContext {
     pub(super) fn new(api: Arc<dyn CudaApi>, handle: usize, device_id: DeviceId) -> Self {
         Self {
-            api,
-            handle: Some(handle),
+            inner: Arc::new(ContextInner::new(api, handle)),
             device_id,
             _not_sync: PhantomData,
         }
     }
 
     fn ensure_open(&self) -> Result<usize> {
-        self.handle
-            .ok_or_else(|| Error::new(ErrorKind::InvalidState, "NVIDIA context is already closed"))
+        self.inner.handle()
     }
 }
 
@@ -45,17 +108,14 @@ impl Context for NvidiaContext {
 
     fn make_current(&mut self) -> Result<CurrentContextGuard<'_>> {
         let handle = self.ensure_open()?;
-        self.api
+        self.inner
+            .api
             .push_current(handle)
             .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
 
-        let api = Arc::clone(&self.api);
+        let api = Arc::clone(&self.inner.api);
         let mut stack_mismatch_seen = false;
         Ok(CurrentContextGuard::new(self, move || {
-            // A mismatch means an unrelated context was above this guard's
-            // context. After restoring that stack entry, another pop would
-            // repeat the mismatch; if restoration failed, another pop could
-            // remove an unrelated context. Do not retry that unsafe operation.
             if stack_mismatch_seen {
                 return Ok(());
             }
@@ -73,8 +133,6 @@ impl Context for NvidiaContext {
                 "cuCtxPopCurrent_v2 returned context handle {popped:#x}, expected {handle:#x}"
             );
 
-            // A different context was on top of the thread's stack. Restore
-            // it before reporting the invariant violation.
             if popped != 0 {
                 if let Err(error) = api.push_current(popped) {
                     let restore_error = cuda_error("cuCtxPushCurrent_v2", error);
@@ -92,8 +150,67 @@ impl Context for NvidiaContext {
         }))
     }
 
+    fn allocate(&self, size_bytes: usize) -> Result<DeviceAllocation> {
+        if size_bytes == 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidArgument,
+                "device allocation size must be greater than zero",
+            ));
+        }
+        let handle = self.ensure_open()?;
+        self.inner
+            .api
+            .push_current(handle)
+            .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
+
+        let allocation_result = self
+            .inner
+            .api
+            .allocate_memory(size_bytes)
+            .map_err(|error| cuda_error("cuMemAlloc_v2", error));
+
+        let restoration = pop_expected_context(&self.inner.api, handle);
+        let address = match (allocation_result, restoration) {
+            (Ok(address), Ok(())) => address,
+            (Err(error), Ok(())) => return Err(error),
+            (Err(error), Err(restore_error)) => {
+                return Err(combine_errors(error, restore_error, "restoring context after allocation"));
+            }
+            (Ok(address), Err(restore_error)) => {
+                // The allocation exists. Make a best-effort second attempt to
+                // restore the stack; if it remains current, free it directly.
+                if self.inner.api.pop_current().is_err() {
+                    let free_result = self
+                        .inner
+                        .api
+                        .free_memory(address)
+                        .map_err(|error| cuda_error("cuMemFree_v2", error));
+                    if let Err(free_error) = free_result {
+                        return Err(combine_errors(
+                            restore_error,
+                            free_error,
+                            "cleaning up an allocation after context restoration failed",
+                        ));
+                    }
+                }
+                return Err(restore_error);
+            }
+        };
+
+        self.inner.live_allocations.fetch_add(1, Ordering::AcqRel);
+        let inner = Arc::clone(&self.inner);
+        let owner: Arc<dyn Any + Send + Sync> = inner.clone();
+        DeviceAllocation::new(
+            self.device_id,
+            DeviceAddress::from_raw(address),
+            size_bytes,
+            owner,
+            move || release_allocation(&inner, address),
+        )
+    }
+
     fn synchronize(&mut self) -> Result<()> {
-        let api = Arc::clone(&self.api);
+        let api = Arc::clone(&self.inner.api);
         let guard = self.make_current()?;
         let synchronization = api
             .synchronize()
@@ -104,37 +221,95 @@ impl Context for NvidiaContext {
             (Ok(()), Ok(())) => Ok(()),
             (Err(error), Ok(())) => Err(error),
             (Ok(()), Err(error)) => Err(error),
-            (Err(sync_error), Err(restore_error)) => Err(Error::new(
-                sync_error.kind(),
-                format!(
-                    "{}; restoring the previous current context also failed: {}",
-                    sync_error.message(),
-                    restore_error.message()
-                ),
+            (Err(sync_error), Err(restore_error)) => Err(combine_errors(
+                sync_error,
+                restore_error,
+                "restoring the previous current context",
             )),
         }
     }
 
     fn close(&mut self) -> Result<()> {
-        let Some(handle) = self.handle else {
-            return Ok(());
-        };
-
-        self.api
-            .destroy_context(handle)
-            .map_err(|error| cuda_error("cuCtxDestroy_v2", error))?;
-        self.handle = None;
-        Ok(())
+        self.inner.close()
     }
+}
+
+fn pop_expected_context(api: &Arc<dyn CudaApi>, expected: usize) -> Result<()> {
+    let popped = api
+        .pop_current()
+        .map_err(|error| cuda_error("cuCtxPopCurrent_v2", error))?;
+    if popped == expected {
+        return Ok(());
+    }
+
+    let mismatch = Error::new(
+        ErrorKind::InvalidState,
+        format!(
+            "cuCtxPopCurrent_v2 returned context handle {popped:#x}, expected {expected:#x}"
+        ),
+    );
+    if popped != 0 {
+        api.push_current(popped)
+            .map_err(|error| combine_errors(
+                mismatch.clone(),
+                cuda_error("cuCtxPushCurrent_v2", error),
+                "restoring the unexpected context",
+            ))?;
+    }
+    Err(mismatch)
+}
+
+fn release_allocation(inner: &Arc<ContextInner>, address: u64) -> CleanupOutcome {
+    let handle = match inner.handle() {
+        Ok(handle) => handle,
+        Err(error) => return CleanupOutcome::Retain(error),
+    };
+
+    if let Err(error) = inner.api.push_current(handle) {
+        return CleanupOutcome::Retain(cuda_error("cuCtxPushCurrent_v2", error));
+    }
+
+    let free_result = inner
+        .api
+        .free_memory(address)
+        .map_err(|error| cuda_error("cuMemFree_v2", error));
+    let restore_result = pop_expected_context(&inner.api, handle);
+
+    match (free_result, restore_result) {
+        (Ok(()), Ok(())) => {
+            inner.live_allocations.fetch_sub(1, Ordering::AcqRel);
+            CleanupOutcome::Released(Ok(()))
+        }
+        (Ok(()), Err(restore_error)) => {
+            // The device allocation is gone even though the caller's context
+            // stack could not be restored. Disarm cleanup to prevent double-free.
+            inner.live_allocations.fetch_sub(1, Ordering::AcqRel);
+            CleanupOutcome::Released(Err(restore_error))
+        }
+        (Err(free_error), Ok(())) => CleanupOutcome::Retain(free_error),
+        (Err(free_error), Err(restore_error)) => CleanupOutcome::Retain(combine_errors(
+            free_error,
+            restore_error,
+            "restoring the previous current context after a failed free",
+        )),
+    }
+}
+
+fn combine_errors(primary: Error, secondary: Error, operation: &str) -> Error {
+    Error::new(
+        primary.kind(),
+        format!(
+            "{}; {operation} also failed: {}",
+            primary.message(),
+            secondary.message()
+        ),
+    )
 }
 
 impl Drop for NvidiaContext {
     fn drop(&mut self) {
-        if let Some(handle) = self.handle {
-            // Drop must not panic. Explicit close remains available when the
-            // caller needs to observe and retry a destruction failure.
-            let _ = self.api.destroy_context(handle);
-            self.handle = None;
-        }
+        // ContextInner is destroyed only after the last allocation releases
+        // its retained Arc. This wrapper therefore has no native handle to
+        // destroy directly.
     }
 }
