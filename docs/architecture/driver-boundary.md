@@ -84,9 +84,12 @@ CUDA-specific types are not permitted in its signatures.
   context stack and returns a scoped guard. Guard cleanup pops the stack and
   verifies that the popped native handle is the expected context.
 - If guard cleanup encounters an unexpected context, the backend attempts
-  to push that context back before reporting an InvalidState error.
-- Explicit guard cleanup is fallible. On failure, Drop makes one additional
-  best-effort cleanup attempt; cleanup failures are never allowed to panic.
+  to push that context back before reporting an InvalidState error. It does
+  not issue another pop during Drop after a stack mismatch, because doing so
+  could remove an unrelated context or repeat a known mismatch.
+- Explicit guard cleanup is fallible. On ordinary pop failure, Drop makes one
+  additional best-effort cleanup attempt; cleanup failures are never allowed
+  to panic.
 - NVIDIA synchronize temporarily pushes the target context, calls
   cuCtxSynchronize, and attempts to pop the target context on both success
   and failure paths. If synchronization and restoration both fail, the
