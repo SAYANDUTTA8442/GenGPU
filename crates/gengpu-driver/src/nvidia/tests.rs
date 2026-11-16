@@ -542,7 +542,9 @@ fn unexpected_popped_context_is_reported_and_restoration_is_attempted() {
     assert_eq!(error.kind(), ErrorKind::InvalidState);
     assert!(error.message().contains("expected 0x2710"));
     let state = api.state.lock().unwrap();
-    assert_eq!(state.push_calls, 1);
+    // One push activates the requested context; the second restores the
+    // unexpected context returned by the pop operation.
+    assert_eq!(state.push_calls, 2);
     assert_eq!(state.pop_calls, 1);
 }
 
