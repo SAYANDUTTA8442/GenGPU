@@ -868,6 +868,11 @@ fn successful_free_is_not_retried_when_context_restoration_needs_retry() {
     driver.initialize().unwrap();
     let mut context = driver.create_context(DeviceId::new(0)).unwrap();
     let mut allocation = context.allocate(96).unwrap();
+    {
+        let mut state = api.state.lock().unwrap();
+        state.pop_error = Some(CudaError::new(709));
+        state.pop_error_remaining = 1;
+    }
 
     let error = allocation.deallocate().unwrap_err();
 
