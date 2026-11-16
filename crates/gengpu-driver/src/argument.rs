@@ -41,6 +41,8 @@ mod private {
     impl_supported_scalar!(u8, i8, u16, i16, u32, i32, u64, i64, f32, f64);
 }
 
+// These internal fields are consumed by the native launch path in PH1-007D3.
+#[allow(dead_code)]
 enum KernelArgValue<'a> {
     Scalar(*mut c_void),
     DevicePointer {
@@ -99,6 +101,7 @@ impl<'a> KernelArg<'a> {
     ///
     /// This is crate-private so the driver backend can validate exact context
     /// ownership before launching.
+    #[allow(dead_code)]
     pub(crate) fn device_allocation(&self) -> Option<&DeviceAllocation> {
         match &self.value {
             KernelArgValue::Scalar(_) => None,
@@ -112,6 +115,7 @@ impl<'a> KernelArg<'a> {
     /// and its borrow is alive. Launch code must build the pointer array only
     /// after the argument slice is finalized and must not move its elements
     /// until the synchronous launch and synchronization have completed.
+    #[allow(dead_code)]
     pub(crate) fn kernel_param_ptr(&self) -> *mut c_void {
         match &self.value {
             KernelArgValue::Scalar(pointer) => *pointer,
