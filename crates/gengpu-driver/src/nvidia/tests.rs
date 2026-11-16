@@ -911,7 +911,6 @@ fn allocation_is_freed_when_initial_context_restoration_requires_retry() {
     assert_eq!(state.pop_calls, 3);
 }
 
-
 #[test]
 fn dropped_allocation_transfers_failed_free_to_context_for_close_retry() {
     let (driver, api) = initialized_driver();
