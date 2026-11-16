@@ -883,7 +883,6 @@ fn successful_free_is_not_retried_when_context_restoration_needs_retry() {
     assert_eq!(state.pop_calls, 3);
 }
 
-
 #[test]
 fn allocation_is_freed_when_initial_context_restoration_requires_retry() {
     let (driver, api) = driver_with_mock(MockState {
