@@ -6,3 +6,4 @@ description = "NVIDIA driver integration for GenGPU."
 license = "Apache-2.0"
 
 [dependencies]
+gengpu-core = { path = "../gengpu-core" }
