@@ -721,7 +721,7 @@ fn zero_byte_device_allocation_is_rejected_before_cuda_call() {
     let (driver, api) = initialized_driver();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
 
-    let error = context.allocate(0).unwrap_err();
+    let error = context.allocate(0).err().expect("zero-byte allocation must fail");
 
     assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     assert_eq!(api.state.lock().unwrap().allocation_calls, 0);
@@ -740,7 +740,7 @@ fn allocation_failure_restores_previous_context_stack() {
     driver.initialize().unwrap();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
 
-    let error = context.allocate(128).unwrap_err();
+    let error = context.allocate(128).err().expect("allocation must fail");
 
     assert_eq!(error.kind(), ErrorKind::Driver);
     let state = api.state.lock().unwrap();
@@ -841,4 +841,31 @@ fn free_error_is_reported_and_context_stack_is_restored() {
     assert!(state.context_stack.is_empty());
     assert_eq!(state.push_calls, 2);
     assert_eq!(state.pop_calls, 2);
+}
+
+
+#[test]
+fn successful_free_is_not_retried_when_context_restoration_needs_retry() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        pop_error: Some(CudaError::new(709)),
+        pop_error_remaining: 1,
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(96).unwrap();
+
+    let error = allocation.deallocate().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(allocation.is_deallocated());
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.free_calls, 1);
+    assert_eq!(state.freed_addresses.len(), 1);
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.pop_calls, 3);
 }
