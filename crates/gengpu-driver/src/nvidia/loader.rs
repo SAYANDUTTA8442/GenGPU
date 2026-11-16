@@ -87,6 +87,10 @@ impl DynamicCudaApi {
             required_symbol::<CuCtxPushCurrent>(&library, b"cuCtxPushCurrent_v2\0")?;
         let cu_ctx_synchronize =
             required_symbol::<CuCtxSynchronize>(&library, b"cuCtxSynchronize\0")?;
+        let cu_memcpy_htod =
+            required_symbol::<CuMemcpyHtoD>(&library, b"cuMemcpyHtoD_v2\0")?;
+        let cu_memcpy_dtoh =
+            required_symbol::<CuMemcpyDtoH>(&library, b"cuMemcpyDtoH_v2\0")?;
 
         let cu_mem_alloc = required_symbol::<CuMemAlloc>(&library, b"cuMemAlloc_v2\0")?;
         let cu_mem_free = required_symbol::<CuMemFree>(&library, b"cuMemFree_v2\0")?;
