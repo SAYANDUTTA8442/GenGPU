@@ -352,4 +352,3 @@ fn combine_errors(primary: Error, secondary: Error, operation: &str) -> Error {
         ),
     )
 }
-
