@@ -414,16 +414,12 @@ impl Context for NvidiaContext {
                     "restoring context after PTX module load failure",
                 ));
             }
-            (Ok(module), Err(restore_error)) => {
-                let cleanup = unload_unreturned_module(&self.inner.api, handle, module);
-                return match cleanup {
-                    Ok(()) => Err(restore_error),
-                    Err(cleanup_error) => Err(combine_errors(
-                        restore_error,
-                        cleanup_error,
-                        "cleaning up a PTX module after context restoration failed",
-                    )),
-                };
+            (Ok(_module), Err(restore_error)) => {
+                // The module was created, but the caller's context stack could
+                // not be restored. Do not guess whether another push/pop is
+                // safe here. The context remains the reclamation owner; C3
+                // adds an explicit orphan registry for this path.
+                return Err(restore_error);
             }
         };
 
@@ -590,30 +586,6 @@ pub(super) fn pop_expected_context_retry(api: &Arc<dyn CudaApi>, expected: usize
             }
         }
         Err(error) => Err(error),
-    }
-}
-
-fn unload_unreturned_module(
-    api: &Arc<dyn CudaApi>,
-    context_handle: usize,
-    module_handle: usize,
-) -> Result<()> {
-    api.push_current(context_handle)
-        .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
-    let unload_result = api
-        .unload_module(module_handle)
-        .map_err(|error| cuda_error("cuModuleUnload", error));
-    let restoration = pop_expected_context_retry(api, context_handle);
-
-    match (unload_result, restoration) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-        (Err(error), Err(restore_error)) => Err(combine_errors(
-            error,
-            restore_error,
-            "restoring context after PTX module cleanup",
-        )),
     }
 }
 
