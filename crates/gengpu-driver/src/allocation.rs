@@ -188,7 +188,10 @@ mod tests {
             }
         });
 
-        assert_eq!(allocation.deallocate().unwrap_err().kind(), ErrorKind::Driver);
+        assert_eq!(
+            allocation.deallocate().unwrap_err().kind(),
+            ErrorKind::Driver
+        );
         assert!(!allocation.is_deallocated());
         allocation.deallocate().unwrap();
 
