@@ -145,15 +145,22 @@ impl ContextInner {
 
 impl Drop for ContextInner {
     fn drop(&mut self) {
-        if let Ok(handle) = self.handle.get_mut() {
-            if let Some(native_handle) = *handle {
-                // Every returned allocation retains this ContextInner. Any
-                // allocation whose Drop cleanup failed is first transferred
-                // to the orphan registry and no longer owns a separate Arc.
-                // CUDA context destruction is the final reclamation boundary
-                // if best-effort explicit frees still fail here.
-                let _ = self.cleanup_orphaned_allocations(native_handle);
-                let _ = self.api.destroy_context(native_handle);
+        let native_handle = self
+            .handle
+            .get_mut()
+            .ok()
+            .and_then(|handle| *handle);
+
+        if let Some(native_handle) = native_handle {
+            // Every returned allocation retains this ContextInner. Any
+            // allocation whose Drop cleanup failed is first transferred
+            // to the orphan registry and no longer owns a separate Arc.
+            // CUDA context destruction is the final reclamation boundary
+            // if best-effort explicit frees still fail here.
+            let _ = self.cleanup_orphaned_allocations(native_handle);
+            let _ = self.api.destroy_context(native_handle);
+
+            if let Ok(handle) = self.handle.get_mut() {
                 *handle = None;
             }
         }
@@ -272,19 +279,29 @@ impl Context for NvidiaContext {
                     Err(restore_error.clone())
                 };
                 let cleanup = cleanup_unreturned_allocation(&self.inner, handle, address);
-                return match (recovery, cleanup) {
-                    (Ok(()), Ok(())) => Err(restore_error),
-                    (Err(recovery_error), Ok(())) => Err(combine_errors(
+                let cleanup_error = match cleanup {
+                    CleanupOutcome::Released(result) => result.err(),
+                    CleanupOutcome::Retain(error) => {
+                        // The allocation was never returned to the caller.
+                        // Transfer ownership to the context for a later retry.
+                        self.inner.register_orphaned_allocation(address, false);
+                        Some(error)
+                    }
+                };
+
+                return match (recovery, cleanup_error) {
+                    (Ok(()), None) => Err(restore_error),
+                    (Err(recovery_error), None) => Err(combine_errors(
                         restore_error,
                         recovery_error,
                         "retrying context restoration",
                     )),
-                    (Ok(()), Err(cleanup_error)) => Err(combine_errors(
+                    (Ok(()), Some(cleanup_error)) => Err(combine_errors(
                         restore_error,
                         cleanup_error,
                         "cleaning up an allocation after context restoration failed",
                     )),
-                    (Err(recovery_error), Err(cleanup_error)) => Err(combine_errors(
+                    (Err(recovery_error), Some(cleanup_error)) => Err(combine_errors(
                         combine_errors(
                             restore_error,
                             recovery_error,
@@ -300,12 +317,18 @@ impl Context for NvidiaContext {
         self.inner.live_allocations.fetch_add(1, Ordering::AcqRel);
         let inner = Arc::clone(&self.inner);
         let owner: Arc<dyn Any + Send + Sync> = inner.clone();
+        let weak_inner: Weak<ContextInner> = Arc::downgrade(&inner);
         DeviceAllocation::new(
             self.device_id,
             DeviceAddress::from_raw(address),
             size_bytes,
             owner,
             move || release_allocation(&inner, address),
+            move || {
+                if let Some(inner) = weak_inner.upgrade() {
+                    inner.register_orphaned_allocation(address, true);
+                }
+            },
         )
     }
 
@@ -379,11 +402,11 @@ fn cleanup_unreturned_allocation(
     inner: &Arc<ContextInner>,
     handle: usize,
     address: u64,
-) -> Result<()> {
-    inner
-        .api
-        .push_current(handle)
-        .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
+) -> CleanupOutcome {
+    if let Err(error) = inner.api.push_current(handle) {
+        return CleanupOutcome::Retain(cuda_error("cuCtxPushCurrent_v2", error));
+    }
+
     let free_result = inner
         .api
         .free_memory(address)
@@ -391,14 +414,44 @@ fn cleanup_unreturned_allocation(
     let restore_result = pop_expected_context_retry(&inner.api, handle);
 
     match (free_result, restore_result) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(error),
-        (Err(free_error), Err(restore_error)) => Err(combine_errors(
-            free_error,
-            restore_error,
-            "restoring context after cleanup of an unreturned allocation",
-        )),
+        (Ok(()), Ok(())) => CleanupOutcome::Released(Ok(())),
+        (Ok(()), Err(error)) => CleanupOutcome::Released(Err(error)),
+        (Err(error), Ok(())) => CleanupOutcome::Retain(error),
+        (Err(free_error), Err(restore_error)) => {
+            CleanupOutcome::Retain(combine_errors(
+                free_error,
+                restore_error,
+                "restoring context after cleanup of an unreturned allocation",
+            ))
+        }
+    }
+}
+
+fn release_orphaned_allocation(
+    api: &Arc<dyn CudaApi>,
+    handle: usize,
+    address: u64,
+) -> CleanupOutcome {
+    if let Err(error) = api.push_current(handle) {
+        return CleanupOutcome::Retain(cuda_error("cuCtxPushCurrent_v2", error));
+    }
+
+    let free_result = api
+        .free_memory(address)
+        .map_err(|error| cuda_error("cuMemFree_v2", error));
+    let restore_result = pop_expected_context_retry(api, handle);
+
+    match (free_result, restore_result) {
+        (Ok(()), Ok(())) => CleanupOutcome::Released(Ok(())),
+        (Ok(()), Err(error)) => CleanupOutcome::Released(Err(error)),
+        (Err(error), Ok(())) => CleanupOutcome::Retain(error),
+        (Err(free_error), Err(restore_error)) => {
+            CleanupOutcome::Retain(combine_errors(
+                free_error,
+                restore_error,
+                "restoring context after orphaned allocation cleanup",
+            ))
+        }
     }
 }
 
