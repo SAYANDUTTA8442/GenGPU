@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use gengpu_core::{DeviceId, Error, ErrorKind};
 
-use crate::Driver;
+use crate::{Context, Driver};
 
 use super::api::{CudaApi, CudaError, CudaLoader, RawDeviceInfo};
 use super::driver::DriverState;
@@ -24,6 +24,15 @@ struct MockState {
     context_create_calls: usize,
     context_destroy_calls: usize,
     destroyed_contexts: Vec<usize>,
+    context_stack: Vec<usize>,
+    push_calls: usize,
+    pop_calls: usize,
+    push_error: Option<CudaError>,
+    pop_error: Option<CudaError>,
+    pop_error_remaining: usize,
+    pop_override: Option<usize>,
+    synchronize_calls: usize,
+    synchronize_error: Option<CudaError>,
 }
 
 #[derive(Clone, Default)]
@@ -75,7 +84,7 @@ impl CudaApi for MockCudaApi {
         if let Some(error) = &state.context_create_error {
             return Err(error.clone());
         }
-        Ok(10_000 + ordinal as usize)
+        Ok(10_000 + state.context_create_calls - 1 + ordinal as usize)
     }
 
     fn destroy_context(&self, handle: usize) -> std::result::Result<(), CudaError> {
@@ -86,6 +95,36 @@ impl CudaApi for MockCudaApi {
         }
         state.destroyed_contexts.push(handle);
         Ok(())
+    }
+
+    fn push_current(&self, handle: usize) -> std::result::Result<(), CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.push_calls += 1;
+        if let Some(error) = state.push_error.take() {
+            return Err(error);
+        }
+        state.context_stack.push(handle);
+        Ok(())
+    }
+
+    fn pop_current(&self) -> std::result::Result<usize, CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.pop_calls += 1;
+        if state.pop_error_remaining > 0 {
+            state.pop_error_remaining -= 1;
+            return Err(state.pop_error.clone().unwrap_or_else(|| CudaError::new(709)));
+        }
+        let popped = state.context_stack.pop().unwrap_or(0);
+        Ok(state.pop_override.take().unwrap_or(popped))
+    }
+
+    fn synchronize(&self) -> std::result::Result<(), CudaError> {
+        let mut state = self.state.lock().expect("mock state lock");
+        state.synchronize_calls += 1;
+        match &state.synchronize_error {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 }
 
@@ -117,6 +156,18 @@ fn driver_with_mock(state: MockState) -> (NvidiaDriver, MockCudaApi) {
         }),
         state: Mutex::new(DriverState::default()),
     };
+    (driver, api)
+}
+
+fn initialized_driver() -> (NvidiaDriver, MockCudaApi) {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
     (driver, api)
 }
 
@@ -400,4 +451,204 @@ fn context_creation_driver_errors_are_translated() {
     assert_eq!(error.kind(), ErrorKind::Driver);
     assert!(error.message().contains("CUDA_ERROR_UNKNOWN"));
     assert!(error.message().contains("simulated create failure"));
+}
+
+#[test]
+fn make_current_pushes_context_and_finish_pops_it() {
+    let (driver, api) = initialized_driver();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let guard = context.make_current().unwrap();
+    assert_eq!(api.state.lock().unwrap().context_stack, vec![10_000]);
+
+    guard.finish().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.push_calls, 1);
+    assert_eq!(state.pop_calls, 1);
+}
+
+#[test]
+fn nested_context_guards_restore_the_previous_context() {
+    let (driver, api) = initialized_driver();
+    let mut first = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut second = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let first_guard = first.make_current().unwrap();
+    let second_guard = second.make_current().unwrap();
+    assert_eq!(api.state.lock().unwrap().context_stack, vec![10_000, 10_001]);
+
+    second_guard.finish().unwrap();
+    assert_eq!(api.state.lock().unwrap().context_stack, vec![10_000]);
+
+    first_guard.finish().unwrap();
+    assert!(api.state.lock().unwrap().context_stack.is_empty());
+}
+
+#[test]
+fn dropping_current_context_guard_pops_context() {
+    let (driver, api) = initialized_driver();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    drop(context.make_current().unwrap());
+
+    assert!(api.state.lock().unwrap().context_stack.is_empty());
+}
+
+#[test]
+fn failed_guard_finish_retries_pop_during_drop() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        pop_error: Some(CudaError::new(709)),
+        pop_error_remaining: 1,
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context.make_current().unwrap().finish().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    let state = api.state.lock().unwrap();
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.pop_calls, 2);
+}
+
+#[test]
+fn unexpected_popped_context_is_reported_and_restoration_is_attempted() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        pop_override: Some(12_345),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context.make_current().unwrap().finish().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidState);
+    assert!(error.message().contains("expected 0x2710"));
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.push_calls, 2);
+    assert_eq!(state.pop_calls, 2);
+}
+
+#[test]
+fn failed_push_does_not_create_a_guard_or_call_synchronization() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        push_error: Some(CudaError::new(709)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context.make_current().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    let state = api.state.lock().unwrap();
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.synchronize_calls, 0);
+}
+
+#[test]
+fn synchronize_temporarily_activates_context_and_restores_previous_context() {
+    let (driver, api) = initialized_driver();
+    let mut first = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut second = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let first_guard = first.make_current().unwrap();
+    second.synchronize().unwrap();
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.context_stack, vec![10_000]);
+    assert_eq!(state.synchronize_calls, 1);
+    assert_eq!(state.push_calls, 2);
+    assert_eq!(state.pop_calls, 1);
+    drop(state);
+
+    first_guard.finish().unwrap();
+    assert!(api.state.lock().unwrap().context_stack.is_empty());
+}
+
+#[test]
+fn synchronization_failure_still_restores_previous_context() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        synchronize_error: Some(CudaError::new(999)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context.synchronize().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("999"));
+    let state = api.state.lock().unwrap();
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.synchronize_calls, 1);
+    assert_eq!(state.pop_calls, 1);
+}
+
+#[test]
+fn synchronization_error_remains_primary_when_restoration_fails() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        synchronize_error: Some(CudaError::new(999)),
+        pop_error: Some(CudaError::new(709)),
+        pop_error_remaining: 1,
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context.synchronize().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("999"));
+    assert!(error.message().contains("restoring the previous current context"));
+    let state = api.state.lock().unwrap();
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.pop_calls, 2);
+}
+
+#[test]
+fn synchronization_restoration_failure_is_reported_when_sync_succeeds() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        pop_error: Some(CudaError::new(709)),
+        pop_error_remaining: 1,
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let mut context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context.synchronize().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("cuCtxPopCurrent_v2"));
+    let state = api.state.lock().unwrap();
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.synchronize_calls, 1);
+    assert_eq!(state.pop_calls, 2);
 }
