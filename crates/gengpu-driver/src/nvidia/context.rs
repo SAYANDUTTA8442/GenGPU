@@ -26,6 +26,8 @@ pub(super) struct ContextInner {
     handle: Mutex<Option<usize>>,
     live_allocations: AtomicUsize,
     orphaned_allocations: Mutex<Vec<u64>>,
+    live_modules: AtomicUsize,
+    orphaned_modules: Mutex<Vec<usize>>,
 }
 
 impl ContextInner {
@@ -35,6 +37,8 @@ impl ContextInner {
             handle: Mutex::new(Some(handle)),
             live_allocations: AtomicUsize::new(0),
             orphaned_allocations: Mutex::new(Vec::new()),
+            live_modules: AtomicUsize::new(0),
+            orphaned_modules: Mutex::new(Vec::new()),
         }
     }
 
@@ -65,6 +69,75 @@ impl ContextInner {
         // zero. Context::close checks the count before draining this registry.
         if decrement_live_count {
             self.live_allocations.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    pub(super) fn register_orphaned_module(&self, module: usize, decrement_live_count: bool) {
+        let mut orphaned = self
+            .orphaned_modules
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        orphaned.push(module);
+
+        // Publish the orphan before making the live-module count reach zero.
+        if decrement_live_count {
+            self.live_modules.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    pub(super) fn module_released(&self) {
+        self.live_modules.fetch_sub(1, Ordering::AcqRel);
+    }
+
+    fn cleanup_orphaned_modules(&self, handle: usize) -> Result<()> {
+        let pending = {
+            let mut orphaned = self
+                .orphaned_modules
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *orphaned)
+        };
+
+        let mut failed = Vec::new();
+        let mut first_error: Option<Error> = None;
+
+        for module in pending {
+            match release_orphaned_module(&self.api, handle, module) {
+                CleanupOutcome::Released(Ok(())) => {}
+                CleanupOutcome::Released(Err(error)) => {
+                    first_error = Some(match first_error.take() {
+                        Some(previous) => combine_errors(
+                            previous,
+                            error,
+                            "cleaning up another orphaned PTX module",
+                        ),
+                        None => error,
+                    });
+                }
+                CleanupOutcome::Retain(error) => {
+                    failed.push(module);
+                    first_error = Some(match first_error.take() {
+                        Some(previous) => combine_errors(
+                            previous,
+                            error,
+                            "cleaning up another orphaned PTX module",
+                        ),
+                        None => error,
+                    });
+                }
+            }
+        }
+
+        if !failed.is_empty() {
+            self.orphaned_modules
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .extend(failed);
+        }
+
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
         }
     }
 
@@ -127,6 +200,12 @@ impl ContextInner {
                 "cannot close an NVIDIA context while device allocations remain live",
             ));
         }
+        if self.live_modules.load(Ordering::Acquire) != 0 {
+            return Err(Error::new(
+                ErrorKind::InvalidState,
+                "cannot close an NVIDIA context while PTX modules remain live",
+            ));
+        }
 
         let native_handle = {
             let handle = self.handle.lock().map_err(|_| {
@@ -140,6 +219,7 @@ impl ContextInner {
                 None => return Ok(()),
             }
         };
+        self.cleanup_orphaned_modules(native_handle)?;
         self.cleanup_orphaned_allocations(native_handle)?;
 
         let mut handle = self.handle.lock().map_err(|_| {
@@ -170,6 +250,7 @@ impl Drop for ContextInner {
             // to the orphan registry and no longer owns a separate Arc.
             // CUDA context destruction is the final reclamation boundary
             // if best-effort explicit frees still fail here.
+            let _ = self.cleanup_orphaned_modules(native_handle);
             let _ = self.cleanup_orphaned_allocations(native_handle);
             let _ = self.api.destroy_context(native_handle);
 
@@ -414,15 +495,16 @@ impl Context for NvidiaContext {
                     "restoring context after PTX module load failure",
                 ));
             }
-            (Ok(_module), Err(restore_error)) => {
-                // The module was created, but the caller's context stack could
-                // not be restored. Do not guess whether another push/pop is
-                // safe here. The context remains the reclamation owner; C3
-                // adds an explicit orphan registry for this path.
+            (Ok(module), Err(restore_error)) => {
+                // The module was created but cannot be returned because the
+                // caller's context stack could not be restored. Transfer it
+                // directly to the context-owned orphan registry.
+                self.inner.register_orphaned_module(module, false);
                 return Err(restore_error);
             }
         };
 
+        self.inner.live_modules.fetch_add(1, Ordering::AcqRel);
         Ok(Box::new(NvidiaModule::new(
             Arc::clone(&self.inner),
             module_handle,
