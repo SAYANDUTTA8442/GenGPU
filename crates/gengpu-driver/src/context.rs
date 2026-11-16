@@ -69,7 +69,9 @@ impl<'a> CurrentContextGuard<'a> {
     /// Restores the previous current-context state and reports cleanup errors.
     ///
     /// If cleanup fails, the guard's Drop implementation makes one
-    /// best-effort retry before the guard is discarded.
+    /// best-effort retry when the backend determines that retry is safe.
+    /// A backend may suppress retry after detecting a context-stack mismatch
+    /// where another pop could disturb unrelated thread state.
     pub fn finish(mut self) -> Result<()> {
         let result = match self.cleanup.as_mut() {
             Some(cleanup) => cleanup(),
