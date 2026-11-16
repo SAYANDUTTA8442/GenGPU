@@ -6,7 +6,9 @@ Approved design; driver and context contracts introduced in PH1-002 and
 PH1-004B. NVIDIA context creation and destruction implemented in PH1-004C.
 NVIDIA scoped context activation and synchronization implemented in PH1-004D.
 Backend-neutral device allocation ownership abstractions introduced in PH1-005B.
-NVIDIA device allocation and deallocation implemented in PH1-005C.
+NVIDIA device allocation and deallocation implemented in PH1-005C. The
+backend-neutral host-device transfer contract was introduced in PH1-006B;
+native NVIDIA transfers remain pending.
 
 ## Purpose
 
@@ -56,6 +58,8 @@ The driver crate exposes:
 - `Context::device_id(&self) -> DeviceId`
 - `Context::make_current(&mut self) -> Result<CurrentContextGuard<'_>>`
 - `Context::allocate(&self, usize) -> Result<DeviceAllocation>`
+- `Context::copy_to_device(&self, &mut DeviceAllocation, usize, &[u8]) -> Result<()>`
+- `Context::copy_from_device(&self, &mut DeviceAllocation, usize, &mut [u8]) -> Result<()>`
 - `Context::synchronize(&mut self) -> Result<()>`
 - `Context::close(&mut self) -> Result<()>`
 
@@ -138,8 +142,25 @@ The backend-neutral API exposes an opaque `DeviceAddress` and an owned
 - Context::allocate defaults to ErrorKind::Unsupported for backends that do
   not implement device memory allocation.
 
-Host-device transfers, pools, streams, and asynchronous allocation are
-outside this phase.
+## Host-device transfer contract (backend-neutral only)
+
+PH1-006B introduces synchronous transfer method signatures on `Context`;
+the default implementation returns ErrorKind::Unsupported. The NVIDIA
+backend does not implement these methods yet.
+
+- `copy_to_device` borrows the source host bytes and mutably borrows the
+  destination allocation for the full call.
+- `copy_from_device` mutably borrows the source allocation and destination
+  host bytes for the full call.
+- Offsets and lengths are expressed in bytes.
+- The allocation-owner identity helper compares the opaque shared owner
+  token, not just DeviceId, so separate contexts on the same device remain
+  isolated.
+- Native bounds validation, context activation, CUDA copies, completion
+  synchronization, and transfer error handling are deferred to PH1-006C/D.
+
+Device-to-device copies, streams, events, pinned host memory, unified memory,
+and asynchronous transfers remain outside PH1-006.
 
 ## Driver lifecycle and ownership
 
@@ -197,7 +218,8 @@ must become controlled GenGPU errors.
 
 This boundary does not implement:
 
-- host-device or device-device memory transfers;
+- native host-device or device-device memory transfers (the backend-neutral
+  host-device method signatures are present);
 - streams or events;
 - PTX module loading or kernel launch;
 - compiler integration.
