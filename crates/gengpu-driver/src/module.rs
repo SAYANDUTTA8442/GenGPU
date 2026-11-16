@@ -16,8 +16,7 @@ pub trait Module: Send {
     /// An empty name or a name containing an embedded NUL byte is invalid.
     /// Implementations return ErrorKind::NotFound when the name is not
     /// present in the loaded module.
-    fn get_function<'module>(&'module self, name: &str)
-        -> Result<KernelFunction<'module>>;
+    fn get_function<'module>(&'module self, name: &str) -> Result<KernelFunction<'module>>;
 
     /// Explicitly unloads this module.
     ///
@@ -116,10 +115,7 @@ mod tests {
     struct StubModule;
 
     impl Module for StubModule {
-        fn get_function<'module>(
-            &'module self,
-            _name: &str,
-        ) -> Result<KernelFunction<'module>> {
+        fn get_function<'module>(&'module self, _name: &str) -> Result<KernelFunction<'module>> {
             Ok(KernelFunction::from_backend_handle(self, 42_u64))
         }
 
