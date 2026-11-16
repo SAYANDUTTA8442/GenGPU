@@ -62,7 +62,11 @@ impl CudaApi for MockCudaApi {
         if let Some(error) = &state.device_info_error {
             return Err(error.clone());
         }
-        state.devices.get(ordinal as usize).cloned().ok_or_else(|| CudaError::new(101))
+        state
+            .devices
+            .get(ordinal as usize)
+            .cloned()
+            .ok_or_else(|| CudaError::new(101))
     }
 
     fn create_context(&self, ordinal: i32) -> std::result::Result<usize, CudaError> {
