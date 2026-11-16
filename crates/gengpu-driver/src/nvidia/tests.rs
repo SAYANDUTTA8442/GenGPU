@@ -164,10 +164,11 @@ impl CudaApi for MockCudaApi {
             return Err(error.clone());
         }
         let length = u64::try_from(destination.len()).expect("test buffer length fits u64");
-        let end = address.checked_add(length).ok_or_else(|| CudaError::new(700))?;
+        let end = address
+            .checked_add(length)
+            .ok_or_else(|| CudaError::new(700))?;
         let Some((base, buffer)) = state.device_buffers.iter().find(|(base, buffer)| {
-            address >= *base
-                && end <= base.saturating_add(u64::try_from(buffer.len()).unwrap())
+            address >= *base && end <= base.saturating_add(u64::try_from(buffer.len()).unwrap())
         }) else {
             return Err(CudaError::new(700));
         };
