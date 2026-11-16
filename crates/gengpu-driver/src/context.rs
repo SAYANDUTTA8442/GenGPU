@@ -51,6 +51,8 @@ impl<'a> CurrentContextGuard<'a> {
     ///
     /// This constructor is crate-private: external callers obtain guards only
     /// through Context::make_current.
+    // Used by backend implementations beginning in PH1-004C.
+    #[allow(dead_code)]
     pub(crate) fn new(cleanup: impl FnMut() -> Result<()> + 'a) -> Self {
         Self {
             cleanup: Some(Box::new(cleanup)),
