@@ -1523,3 +1523,63 @@ fn function_lookup_reports_context_restoration_failure_after_retry() {
     assert_eq!(state.push_calls, 2);
     assert_eq!(state.pop_calls, 3);
 }
+
+#[test]
+fn ptx_module_load_does_not_call_cuda_when_context_push_fails() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        push_error: Some(CudaError::new(709)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .err()
+        .expect("context push failure must be returned");
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_load_calls, 0);
+    assert_eq!(state.module_unload_calls, 0);
+    assert_eq!(state.push_calls, 1);
+    assert_eq!(state.pop_calls, 0);
+}
+
+#[test]
+fn missing_function_error_remains_primary_when_context_restoration_fails() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        function_lookup_error: Some(CudaError::new(500)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+    {
+        let mut state = api.state.lock().unwrap();
+        state.pop_error = Some(CudaError::new(709));
+        state.pop_error_remaining = 1;
+    }
+
+    let error = module
+        .get_function("missing_kernel")
+        .err()
+        .expect("missing function must remain an error");
+
+    assert_eq!(error.kind(), ErrorKind::NotFound);
+    assert!(error.message().contains("missing_kernel"));
+    assert!(error.message().contains("cuCtxPopCurrent_v2"));
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.function_lookup_calls, 1);
+    assert!(state.context_stack.is_empty());
+}
