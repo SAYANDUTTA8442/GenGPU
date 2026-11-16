@@ -78,12 +78,13 @@ impl DeviceAllocation {
         })
     }
 
+    #[allow(dead_code)]
     /// Returns whether this allocation belongs to the exact backend owner.
     ///
     /// Device identity is deliberately not considered: separate contexts on
     /// the same physical device must not be allowed to access one another's
     /// allocations. The owner token remains opaque to callers.
-    // Used by the NVIDIA transfer implementation in PH1-006C.\n    #[allow(dead_code)]\n    pub(crate) fn is_owned_by<T>(&self, owner: &Arc<T>) -> bool
+    pub(crate) fn is_owned_by<T>(&self, owner: &Arc<T>) -> bool
     where
         T: Any + Send + Sync,
     {
