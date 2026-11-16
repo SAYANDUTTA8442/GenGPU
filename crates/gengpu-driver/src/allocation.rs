@@ -78,6 +78,18 @@ impl DeviceAllocation {
         })
     }
 
+    /// Returns whether this allocation belongs to the exact backend owner.
+    ///
+    /// Device identity is deliberately not considered: separate contexts on
+    /// the same physical device must not be allowed to access one another's
+    /// allocations. The owner token remains opaque to callers.
+    pub(crate) fn is_owned_by<T>(&self, owner: &Arc<T>) -> bool
+    where
+        T: Any + Send + Sync,
+    {
+        Arc::as_ptr(&self._owner) as *const () == Arc::as_ptr(owner) as *const ()
+    }
+
     /// Returns the logical device that owns this allocation.
     pub fn device_id(&self) -> DeviceId {
         self.device_id
@@ -141,6 +153,7 @@ impl Drop for DeviceAllocation {
 
 #[cfg(test)]
 mod tests {
+    use std::any::Any;
     use std::sync::{Arc, Mutex};
 
     use gengpu_core::{DeviceId, Error, ErrorKind};
@@ -184,6 +197,26 @@ mod tests {
             result.err().expect("zero-byte allocation must fail").kind(),
             ErrorKind::InvalidArgument
         );
+    }
+
+    #[test]
+    fn allocation_owner_identity_requires_the_exact_owner() {
+        let owner = Arc::new(String::from("context owner"));
+        let erased_owner: Arc<dyn Any + Send + Sync> = owner.clone();
+        let allocation = DeviceAllocation::new(
+            DeviceId::new(3),
+            DeviceAddress::from_raw(0xCAFE),
+            64,
+            erased_owner,
+            || CleanupOutcome::Released(Ok(())),
+            || {},
+        )
+        .unwrap();
+
+        let another_owner = Arc::new(String::from("context owner"));
+
+        assert!(allocation.is_owned_by(&owner));
+        assert!(!allocation.is_owned_by(&another_owner));
     }
 
     #[test]
