@@ -1768,13 +1768,22 @@ fn context_drop_retries_orphaned_module_before_destroying_native_context() {
 
 #[test]
 fn orphan_module_is_not_unloaded_twice_when_context_restore_fails() {
-    let (driver, api) = initialized_driver();
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        module_unload_error: Some(CudaError::new(700)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
     let mut context = driver.create_context(DeviceId::new(0)).unwrap();
     let module = context.load_ptx(".version 7.0\\n.target sm_50").unwrap();
-    drop(module);
+    drop(module); // First unload fails; Drop transfers the handle to ContextInner.
 
     {
         let mut state = api.state.lock().unwrap();
+        state.module_unload_error = None;
         state.pop_error = Some(CudaError::new(709));
         state.pop_error_remaining = 1;
     }
