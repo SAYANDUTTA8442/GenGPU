@@ -144,7 +144,10 @@ impl CudaApi for MockCudaApi {
         state.free_calls += 1;
         if state.free_error_remaining > 0 {
             state.free_error_remaining -= 1;
-            return Err(state.free_error.clone().unwrap_or_else(|| CudaError::new(709)));
+            return Err(state
+                .free_error
+                .clone()
+                .unwrap_or_else(|| CudaError::new(709)));
         }
         if let Some(error) = &state.free_error {
             return Err(error.clone());
@@ -698,7 +701,6 @@ fn synchronization_restoration_failure_is_reported_when_sync_succeeds() {
     assert_eq!(state.pop_calls, 2);
 }
 
-
 #[test]
 fn device_allocation_uses_context_and_returns_metadata() {
     let (driver, api) = initialized_driver();
@@ -708,7 +710,10 @@ fn device_allocation_uses_context_and_returns_metadata() {
 
     assert_eq!(allocation.device_id(), DeviceId::new(0));
     assert_eq!(allocation.size_bytes(), 4096);
-    assert_eq!(allocation.device_address().as_u64(), 0x10000 + 0x1000 + 4096);
+    assert_eq!(
+        allocation.device_address().as_u64(),
+        0x10000 + 0x1000 + 4096
+    );
     let state = api.state.lock().unwrap();
     assert_eq!(state.allocation_calls, 1);
     assert_eq!(state.context_stack, Vec::<usize>::new());
@@ -721,7 +726,10 @@ fn zero_byte_device_allocation_is_rejected_before_cuda_call() {
     let (driver, api) = initialized_driver();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
 
-    let error = context.allocate(0).err().expect("zero-byte allocation must fail");
+    let error = context
+        .allocate(0)
+        .err()
+        .expect("zero-byte allocation must fail");
 
     assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     assert_eq!(api.state.lock().unwrap().allocation_calls, 0);
@@ -794,7 +802,10 @@ fn failed_device_free_retains_allocation_for_retry() {
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let mut allocation = context.allocate(128).unwrap();
 
-    assert_eq!(allocation.deallocate().unwrap_err().kind(), ErrorKind::Driver);
+    assert_eq!(
+        allocation.deallocate().unwrap_err().kind(),
+        ErrorKind::Driver
+    );
     assert!(!allocation.is_deallocated());
     api.state.lock().unwrap().free_error = None;
     allocation.deallocate().unwrap();
@@ -842,7 +853,6 @@ fn free_error_is_reported_and_context_stack_is_restored() {
     assert_eq!(state.push_calls, 2);
     assert_eq!(state.pop_calls, 2);
 }
-
 
 #[test]
 fn successful_free_is_not_retried_when_context_restoration_needs_retry() {
