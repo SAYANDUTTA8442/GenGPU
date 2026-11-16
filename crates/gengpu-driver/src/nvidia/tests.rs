@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use gengpu_core::{DeviceId, Error, ErrorKind};
 
-use crate::{Context, Driver};
+use crate::Driver;
 
 use super::api::{CudaApi, CudaError, CudaLoader, RawDeviceInfo};
 use super::driver::DriverState;
