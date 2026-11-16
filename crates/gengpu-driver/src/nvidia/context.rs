@@ -339,6 +339,44 @@ impl Context for NvidiaContext {
         )
     }
 
+    fn copy_to_device(
+        &self,
+        destination: &mut DeviceAllocation,
+        offset: usize,
+        source: &[u8],
+    ) -> Result<()> {
+        let handle = self.ensure_open()?;
+        let address = validate_transfer(self, destination, offset, source.len())?;
+        let Some(address) = address else {
+            return Ok(());
+        };
+
+        let api = Arc::clone(&self.inner.api);
+        run_synchronous_transfer(&api, handle, || {
+            api.copy_to_device(address, source)
+                .map_err(|error| cuda_error("cuMemcpyHtoD_v2", error))
+        })
+    }
+
+    fn copy_from_device(
+        &self,
+        source: &mut DeviceAllocation,
+        offset: usize,
+        destination: &mut [u8],
+    ) -> Result<()> {
+        let handle = self.ensure_open()?;
+        let address = validate_transfer(self, source, offset, destination.len())?;
+        let Some(address) = address else {
+            return Ok(());
+        };
+
+        let api = Arc::clone(&self.inner.api);
+        run_synchronous_transfer(&api, handle, || {
+            api.copy_from_device(address, destination)
+                .map_err(|error| cuda_error("cuMemcpyDtoH_v2", error))
+        })
+    }
+
     fn synchronize(&mut self) -> Result<()> {
         let api = Arc::clone(&self.inner.api);
         let guard = self.make_current()?;
@@ -361,6 +399,100 @@ impl Context for NvidiaContext {
 
     fn close(&mut self) -> Result<()> {
         self.inner.close()
+    }
+}
+
+fn validate_transfer(
+    context: &NvidiaContext,
+    allocation: &DeviceAllocation,
+    offset: usize,
+    length: usize,
+) -> Result<Option<u64>> {
+    if !allocation.is_owned_by(&context.inner) {
+        return Err(Error::new(
+            ErrorKind::InvalidArgument,
+            "device allocation belongs to a different NVIDIA context",
+        ));
+    }
+    if allocation.is_deallocated() {
+        return Err(Error::new(
+            ErrorKind::InvalidState,
+            "cannot transfer data using a deallocated device allocation",
+        ));
+    }
+
+    let end = offset.checked_add(length).ok_or_else(|| {
+        Error::new(
+            ErrorKind::InvalidArgument,
+            "device transfer offset and length overflow usize",
+        )
+    })?;
+    if end > allocation.size_bytes() {
+        return Err(Error::new(
+            ErrorKind::InvalidArgument,
+            format!(
+                "device transfer range {offset}..{end} exceeds allocation size {}",
+                allocation.size_bytes()
+            ),
+        ));
+    }
+
+    let offset = u64::try_from(offset).map_err(|_| {
+        Error::new(
+            ErrorKind::InvalidArgument,
+            "device transfer offset cannot be represented as a device address",
+        )
+    })?;
+    let address = allocation
+        .device_address()
+        .as_u64()
+        .checked_add(offset)
+        .ok_or_else(|| {
+            Error::new(
+                ErrorKind::InvalidArgument,
+                "device transfer address arithmetic overflow",
+            )
+        })?;
+
+    if length == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(address))
+    }
+}
+
+fn run_synchronous_transfer(
+    api: &Arc<dyn CudaApi>,
+    handle: usize,
+    copy: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    api.push_current(handle)
+        .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
+
+    let copy_result = copy();
+    let synchronization_result = if copy_result.is_ok() {
+        api.synchronize()
+            .map_err(|error| cuda_error("cuCtxSynchronize", error))
+    } else {
+        Ok(())
+    };
+    let restoration_result = pop_expected_context_retry(api, handle);
+
+    match (copy_result, synchronization_result, restoration_result) {
+        (Ok(()), Ok(()), Ok(())) => Ok(()),
+        (Err(copy_error), _, Ok(())) => Err(copy_error),
+        (Err(copy_error), _, Err(restore_error)) => Err(combine_errors(
+            copy_error,
+            restore_error,
+            "restoring the previous current context after a failed transfer",
+        )),
+        (Ok(()), Err(sync_error), Ok(())) => Err(sync_error),
+        (Ok(()), Err(sync_error), Err(restore_error)) => Err(combine_errors(
+            sync_error,
+            restore_error,
+            "restoring the previous current context after transfer synchronization failed",
+        )),
+        (Ok(()), Ok(()), Err(restore_error)) => Err(restore_error),
     }
 }
 
