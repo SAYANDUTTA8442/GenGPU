@@ -51,11 +51,7 @@ pub(super) trait CudaApi: Send + Sync {
     fn free_memory(&self, address: u64) -> std::result::Result<(), CudaError>;
     fn load_module(&self, ptx: &CStr) -> std::result::Result<usize, CudaError>;
     fn unload_module(&self, module: usize) -> std::result::Result<(), CudaError>;
-    fn get_function(
-        &self,
-        module: usize,
-        name: &CStr,
-    ) -> std::result::Result<usize, CudaError>;
+    fn get_function(&self, module: usize, name: &CStr) -> std::result::Result<usize, CudaError>;
 }
 
 /// Loads an implementation of the private CUDA API.
