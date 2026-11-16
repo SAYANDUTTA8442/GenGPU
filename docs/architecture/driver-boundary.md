@@ -127,6 +127,31 @@ PH1-007C3.
 - Current-context state is managed through CUDA's thread-local stack. GenGPU
   does not maintain a process-global current-context variable.
 
+## PTX module contract
+
+- `Context::load_ptx` validates non-empty PTX text without embedded NUL
+  bytes, activates the owning context, and calls `cuModuleLoadData`.
+- `NvidiaModule` retains shared `ContextInner` ownership, keeping the native
+  context and loaded CUDA driver API alive while the module exists.
+- Function lookup validates non-empty names without embedded NUL bytes,
+  activates the owning context, and calls `cuModuleGetFunction`.
+- CUDA's `CUDA_ERROR_NOT_FOUND` result is translated to
+  ErrorKind::NotFound. Other native lookup and load failures are translated
+  to ErrorKind::Driver with CUDA operation diagnostics.
+- Module loading and function lookup restore the caller's previous
+  current-context stack. If loading succeeds but restoration fails, GenGPU
+  attempts to unload the unreturned module before returning the error.
+- A KernelFunction stores an opaque backend handle and carries a Rust borrow
+  tied to its Module. The function handle therefore cannot outlive the module,
+  and the module cannot be mutably unloaded while a function borrow is live.
+- Explicit module unload is fallible and retryable when the native unload
+  fails. If unload succeeds but context restoration fails, the module is
+  marked unloaded and is never unloaded twice.
+- Module Drop performs best-effort unload. PH1-007C3 adds context-owned
+  orphan tracking and prevents explicit context closure while caller-owned
+  modules remain live; until that subphase, context destruction is the final
+  reclamation boundary for a module whose Drop cleanup fails.
+
 ## Device allocation contract
 
 The backend-neutral API exposes an opaque `DeviceAddress` and an owned
