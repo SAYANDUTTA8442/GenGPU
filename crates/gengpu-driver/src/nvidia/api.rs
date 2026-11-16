@@ -1,5 +1,7 @@
 //! Private, injectable interface to the CUDA Driver API.
 
+use std::ffi::CStr;
+
 /// Diagnostic information returned by a failed CUDA Driver API call.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct CudaError {
@@ -47,6 +49,13 @@ pub(super) trait CudaApi: Send + Sync {
     ) -> std::result::Result<(), CudaError>;
     fn allocate_memory(&self, size_bytes: usize) -> std::result::Result<u64, CudaError>;
     fn free_memory(&self, address: u64) -> std::result::Result<(), CudaError>;
+    fn load_module(&self, ptx: &CStr) -> std::result::Result<usize, CudaError>;
+    fn unload_module(&self, module: usize) -> std::result::Result<(), CudaError>;
+    fn get_function(
+        &self,
+        module: usize,
+        name: &CStr,
+    ) -> std::result::Result<usize, CudaError>;
 }
 
 /// Loads an implementation of the private CUDA API.
