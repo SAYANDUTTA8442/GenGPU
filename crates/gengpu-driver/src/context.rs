@@ -231,8 +231,9 @@ mod tests {
     fn ptx_loading_defaults_to_unsupported_for_valid_source() {
         let context = StubContext;
         let error = context
-            .load_ptx(".version 7.0\\n.target sm_50")
-            .unwrap_err();
+            .load_ptx(".version 7.0\n.target sm_50")
+            .err()
+            .expect("valid PTX should reach the unsupported backend");
 
         assert_eq!(error.kind(), ErrorKind::Unsupported);
     }
@@ -240,7 +241,10 @@ mod tests {
     #[test]
     fn ptx_loading_rejects_empty_source_before_backend_dispatch() {
         let context = StubContext;
-        let error = context.load_ptx("").unwrap_err();
+        let error = context
+            .load_ptx("")
+            .err()
+            .expect("empty PTX must be rejected");
 
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     }
@@ -248,7 +252,10 @@ mod tests {
     #[test]
     fn ptx_loading_rejects_embedded_nul_before_backend_dispatch() {
         let context = StubContext;
-        let error = context.load_ptx(".version 7.0\\0.target sm_50").unwrap_err();
+        let error = context
+            .load_ptx(".version 7.0\0.target sm_50")
+            .err()
+            .expect("embedded NUL must be rejected");
 
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
     }
