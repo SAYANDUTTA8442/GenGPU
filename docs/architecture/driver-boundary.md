@@ -4,7 +4,7 @@
 
 Approved design; driver and context contracts introduced in PH1-002 and
 PH1-004B. NVIDIA context creation and destruction implemented in PH1-004C.
-NVIDIA scoped context activation and synchronization implemented in PH1-004D.
+NVIDIA scoped context activation and synchronization implemented in PH1-004D.\nBackend-neutral device allocation ownership abstractions introduced in PH1-005B.
 
 ## Purpose
 
@@ -53,7 +53,7 @@ The driver crate exposes:
 - `Driver::create_context(&self, DeviceId) -> Result<Box<dyn Context>>`
 - `Context::device_id(&self) -> DeviceId`
 - `Context::make_current(&mut self) -> Result<CurrentContextGuard<'_>>`
-- `Context::synchronize(&mut self) -> Result<()>`
+- `Context::allocate(&self, usize) -> Result<DeviceAllocation>`\n- `Context::synchronize(&mut self) -> Result<()>`
 - `Context::close(&mut self) -> Result<()>`
 
 The contract uses only gengpu-core types and GenGPU-owned abstractions.
@@ -97,6 +97,27 @@ CUDA-specific types are not permitted in its signatures.
   in its diagnostic message.
 - Current-context state is managed through CUDA's thread-local stack. GenGPU
   does not maintain a process-global current-context variable.
+
+## Device allocation contract
+
+The backend-neutral API exposes an opaque `DeviceAddress` and an owned
+`DeviceAllocation`:
+
+- DeviceAddress is a numeric device-space address, not a host pointer. Host
+  code must never dereference it.
+- DeviceAllocation records its DeviceId, opaque address, and byte size.
+- DeviceAllocation retains an owner token so backend context state can outlive
+  the public Context wrapper.
+- Explicit deallocation is fallible, idempotent after success, and retains
+  cleanup state after failure so the caller can retry.
+- Drop performs one best-effort cleanup attempt and never panics.
+- Zero-byte allocations are rejected with ErrorKind::InvalidArgument.
+- Context::allocate defaults to ErrorKind::Unsupported until a backend
+  implements device memory allocation.
+
+The NVIDIA backend allocation implementation and enforcement of context
+close restrictions are deferred to PH1-005C. Host-device transfers and
+asynchronous allocation are outside this phase.
 
 ## Driver lifecycle and ownership
 
@@ -154,7 +175,7 @@ must become controlled GenGPU errors.
 
 This boundary does not implement:
 
-- device memory allocation or transfers;
+- host-device or device-device memory transfers;
 - streams or events;
 - PTX module loading or kernel launch;
 - compiler integration.
