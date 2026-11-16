@@ -145,11 +145,7 @@ impl ContextInner {
 
 impl Drop for ContextInner {
     fn drop(&mut self) {
-        let native_handle = self
-            .handle
-            .get_mut()
-            .ok()
-            .and_then(|handle| *handle);
+        let native_handle = self.handle.get_mut().ok().and_then(|handle| *handle);
 
         if let Some(native_handle) = native_handle {
             // Every returned allocation retains this ContextInner. Any
@@ -417,13 +413,11 @@ fn cleanup_unreturned_allocation(
         (Ok(()), Ok(())) => CleanupOutcome::Released(Ok(())),
         (Ok(()), Err(error)) => CleanupOutcome::Released(Err(error)),
         (Err(error), Ok(())) => CleanupOutcome::Retain(error),
-        (Err(free_error), Err(restore_error)) => {
-            CleanupOutcome::Retain(combine_errors(
-                free_error,
-                restore_error,
-                "restoring context after cleanup of an unreturned allocation",
-            ))
-        }
+        (Err(free_error), Err(restore_error)) => CleanupOutcome::Retain(combine_errors(
+            free_error,
+            restore_error,
+            "restoring context after cleanup of an unreturned allocation",
+        )),
     }
 }
 
@@ -445,13 +439,11 @@ fn release_orphaned_allocation(
         (Ok(()), Ok(())) => CleanupOutcome::Released(Ok(())),
         (Ok(()), Err(error)) => CleanupOutcome::Released(Err(error)),
         (Err(error), Ok(())) => CleanupOutcome::Retain(error),
-        (Err(free_error), Err(restore_error)) => {
-            CleanupOutcome::Retain(combine_errors(
-                free_error,
-                restore_error,
-                "restoring context after orphaned allocation cleanup",
-            ))
-        }
+        (Err(free_error), Err(restore_error)) => CleanupOutcome::Retain(combine_errors(
+            free_error,
+            restore_error,
+            "restoring context after orphaned allocation cleanup",
+        )),
     }
 }
 
