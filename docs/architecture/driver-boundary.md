@@ -7,8 +7,9 @@ PH1-004B. NVIDIA context creation and destruction implemented in PH1-004C.
 NVIDIA scoped context activation and synchronization implemented in PH1-004D.
 Backend-neutral device allocation ownership abstractions introduced in PH1-005B.
 NVIDIA device allocation and deallocation implemented in PH1-005C. The
-backend-neutral host-device transfer contract was introduced in PH1-006B;
-native NVIDIA transfers remain pending.
+backend-neutral transfer contract was introduced in PH1-006B and
+synchronous NVIDIA transfers are implemented in PH1-006C. Hardware validation
+remains pending.
 
 ## Purpose
 
@@ -142,11 +143,12 @@ The backend-neutral API exposes an opaque `DeviceAddress` and an owned
 - Context::allocate defaults to ErrorKind::Unsupported for backends that do
   not implement device memory allocation.
 
-## Host-device transfer contract (backend-neutral only)
+## Host-device transfer contract
 
-PH1-006B introduces synchronous transfer method signatures on `Context`;
-the default implementation returns ErrorKind::Unsupported. The NVIDIA
-backend does not implement these methods yet.
+PH1-006B introduced synchronous transfer method signatures on `Context`;
+backends without transfer support return ErrorKind::Unsupported. PH1-006C
+implements these methods in the NVIDIA backend using `cuMemcpyHtoD_v2` and
+`cuMemcpyDtoH_v2`.
 
 - `copy_to_device` borrows the source host bytes and mutably borrows the
   destination allocation for the full call.
@@ -156,8 +158,16 @@ backend does not implement these methods yet.
 - The allocation-owner identity helper compares the opaque shared owner
   token, not just DeviceId, so separate contexts on the same device remain
   isolated.
-- Native bounds validation, context activation, CUDA copies, completion
-  synchronization, and transfer error handling are deferred to PH1-006C/D.
+- The NVIDIA backend rejects deallocated allocations and validates the
+  transfer range and device-address arithmetic before making a native call.
+  Zero-length in-range transfers are no-ops after ownership and lifecycle
+  validation.
+- Non-empty transfers activate the owning context, issue the native copy,
+  synchronize the context after a successful copy, and restore the previous
+  current context. Copy or synchronization errors remain primary if
+  restoration also fails.
+- Mock-based behavior is covered by unit tests; physical GPU validation is
+  reserved for PH1-006D.
 
 Device-to-device copies, streams, events, pinned host memory, unified memory,
 and asynchronous transfers remain outside PH1-006.
