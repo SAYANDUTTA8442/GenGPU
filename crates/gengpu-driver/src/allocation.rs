@@ -44,6 +44,8 @@ impl DeviceAllocation {
     ///
     /// This constructor is crate-private: callers obtain allocations only
     /// through Context::allocate.
+    // Used by concrete backend implementations introduced in PH1-005C.
+    #[allow(dead_code)]
     pub(crate) fn new(
         device_id: DeviceId,
         address: DeviceAddress,
