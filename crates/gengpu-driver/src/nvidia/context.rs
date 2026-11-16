@@ -44,19 +44,62 @@ impl Context for NvidiaContext {
     }
 
     fn make_current(&mut self) -> Result<CurrentContextGuard<'_>> {
-        self.ensure_open()?;
-        Err(Error::new(
-            ErrorKind::Unsupported,
-            "NVIDIA current-context activation is not implemented until PH1-004D",
-        ))
+        let handle = self.ensure_open()?;
+        self.api
+            .push_current(handle)
+            .map_err(|error| cuda_error("cuCtxPushCurrent_v2", error))?;
+
+        let api = Arc::clone(&self.api);
+        Ok(CurrentContextGuard::new(self, move || {
+            let popped = api
+                .pop_current()
+                .map_err(|error| cuda_error("cuCtxPopCurrent_v2", error))?;
+
+            if popped == handle {
+                return Ok(());
+            }
+
+            let mismatch = format!(
+                "cuCtxPopCurrent_v2 returned context handle {popped:#x}, expected {handle:#x}"
+            );
+
+            // A different context was on top of the thread's stack. Restore
+            // it before reporting the invariant violation.
+            if popped != 0 {
+                if let Err(error) = api.push_current(popped) {
+                    let restore_error = cuda_error("cuCtxPushCurrent_v2", error);
+                    return Err(Error::new(
+                        restore_error.kind(),
+                        format!("{mismatch}; restoring the unexpected context also failed: {}", restore_error.message()),
+                    ));
+                }
+            }
+
+            Err(Error::new(ErrorKind::InvalidState, mismatch))
+        }))
     }
 
     fn synchronize(&mut self) -> Result<()> {
-        self.ensure_open()?;
-        Err(Error::new(
-            ErrorKind::Unsupported,
-            "NVIDIA context synchronization is not implemented until PH1-004D",
-        ))
+        let guard = self.make_current()?;
+        let synchronization = self
+            .api
+            .synchronize()
+            .map_err(|error| cuda_error("cuCtxSynchronize", error));
+        let restoration = guard.finish();
+
+        match (synchronization, restoration) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Err(sync_error), Err(restore_error)) => Err(Error::new(
+                sync_error.kind(),
+                format!(
+                    "{}; restoring the previous current context also failed: {}",
+                    sync_error.message(),
+                    restore_error.message()
+                ),
+            )),
+        }
     }
 
     fn close(&mut self) -> Result<()> {
