@@ -8,9 +8,10 @@ NVIDIA scoped context activation and synchronization implemented in PH1-004D.
 Backend-neutral device allocation ownership abstractions introduced in PH1-005B.
 NVIDIA device allocation and deallocation implemented in PH1-005C. The
 backend-neutral transfer contract was introduced in PH1-006B and
-synchronous NVIDIA transfers are implemented in PH1-006C. The backend-neutral
-PTX module and kernel-function contracts were introduced in PH1-007C1; NVIDIA
-module loading remains pending.
+synchronous NVIDIA transfers are implemented in PH1-006C. Backend-neutral
+PTX module contracts were introduced in PH1-007C1. NVIDIA PTX loading and
+function resolution are implemented in PH1-007C2; robust module orphan cleanup
+and hardware validation remain pending.
 
 ## Purpose
 
@@ -79,8 +80,13 @@ PTX. A KernelFunction carries a borrow lifetime tied to its parent Module and
 is neither Send nor Sync. Its backend-specific handle is type-erased; only
 backend code that knows the concrete handle type can retrieve it. Function
 lookup rejects empty names and embedded NUL bytes, and reports NotFound when
-the requested function does not exist. Concrete NVIDIA loading, function
-resolution, and cleanup are implemented in later PH1-007C subphases.
+the requested function does not exist. The NVIDIA backend loads PTX through `cuModuleLoadData`, resolves functions
+through `cuModuleGetFunction`, and explicitly unloads modules through
+`cuModuleUnload`. Each operation activates the owning context and restores
+the previous current-context stack. A failed function lookup maps CUDA's
+`CUDA_ERROR_NOT_FOUND` result to ErrorKind::NotFound. Robust orphan tracking
+for failed module cleanup and context-close restrictions are completed in
+PH1-007C3.
 
 ## Context ownership and lifecycle
 
@@ -246,5 +252,5 @@ This boundary does not implement:
 - native host-device or device-device memory transfers (the backend-neutral
   host-device method signatures are present);
 - streams or events;
-- PTX module loading or kernel launch;
+- kernel launch;
 - compiler integration.
