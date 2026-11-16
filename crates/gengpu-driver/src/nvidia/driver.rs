@@ -13,12 +13,12 @@ use super::loader::DynamicCudaLoader;
 /// Constructing this value does not require an installed NVIDIA driver. Calls
 /// are serialized through an internal mutex.
 pub struct NvidiaDriver {
-    loader: Box<dyn CudaLoader>,
-    state: Mutex<DriverState>,
+    pub(super) loader: Box<dyn CudaLoader>,
+    pub(super) state: Mutex<DriverState>,
 }
 
 #[derive(Default)]
-struct DriverState {
+pub(super) struct DriverState {
     api: Option<Box<dyn CudaApi>>,
     driver_version: Option<i32>,
 }

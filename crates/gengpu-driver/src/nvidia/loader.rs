@@ -143,7 +143,7 @@ impl CudaApi for DynamicCudaApi {
         let mut device = 0;
         self.check(unsafe { (self.cu_device_get)(&mut device, ordinal) })?;
 
-        let mut name = [0 as c_char; CUDA_DEVICE_NAME_BUFFER_LENGTH as usize];
+        let mut name = [0; CUDA_DEVICE_NAME_BUFFER_LENGTH as usize];
         self.check(unsafe {
             (self.cu_device_get_name)(
                 name.as_mut_ptr(),

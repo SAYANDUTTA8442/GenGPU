@@ -194,6 +194,19 @@ fn device_query_failure_is_translated_to_driver_error() {
 }
 
 #[test]
+fn driver_version_query_failure_does_not_mark_driver_initialized() {
+    let (driver, _) = driver_with_mock(MockState {
+        driver_version_error: Some(CudaError::new(35)),
+        ..MockState::default()
+    });
+
+    let error = driver.initialize().unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert_eq!(driver.enumerate_devices().unwrap_err().kind(), ErrorKind::InvalidState);
+}
+
+#[test]
 fn driver_version_is_unavailable_before_initialization() {
     let (driver, _) = driver_with_mock(MockState::default());
 
