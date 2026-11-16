@@ -109,8 +109,7 @@ impl DynamicCudaApi {
         let cu_mem_free = required_symbol::<CuMemFree>(&library, b"cuMemFree_v2\0")?;
         let cu_module_load_data =
             required_symbol::<CuModuleLoadData>(&library, b"cuModuleLoadData\0")?;
-        let cu_module_unload =
-            required_symbol::<CuModuleUnload>(&library, b"cuModuleUnload\0")?;
+        let cu_module_unload = required_symbol::<CuModuleUnload>(&library, b"cuModuleUnload\0")?;
         let cu_module_get_function =
             required_symbol::<CuModuleGetFunction>(&library, b"cuModuleGetFunction\0")?;
 
@@ -338,9 +337,7 @@ impl CudaApi for DynamicCudaApi {
 
     fn load_module(&self, ptx: &CStr) -> std::result::Result<usize, CudaError> {
         let mut module = ptr::null_mut();
-        self.check(unsafe {
-            (self.cu_module_load_data)(&mut module, ptx.as_ptr().cast())
-        })?;
+        self.check(unsafe { (self.cu_module_load_data)(&mut module, ptx.as_ptr().cast()) })?;
         if module.is_null() {
             let mut error = CudaError::new(-1);
             error.description = Some(String::from(
@@ -355,18 +352,10 @@ impl CudaApi for DynamicCudaApi {
         self.check(unsafe { (self.cu_module_unload)(module as CuModule) })
     }
 
-    fn get_function(
-        &self,
-        module: usize,
-        name: &CStr,
-    ) -> std::result::Result<usize, CudaError> {
+    fn get_function(&self, module: usize, name: &CStr) -> std::result::Result<usize, CudaError> {
         let mut function = ptr::null_mut();
         self.check(unsafe {
-            (self.cu_module_get_function)(
-                &mut function,
-                module as CuModule,
-                name.as_ptr(),
-            )
+            (self.cu_module_get_function)(&mut function, module as CuModule, name.as_ptr())
         })?;
         if function.is_null() {
             let mut error = CudaError::new(500);
