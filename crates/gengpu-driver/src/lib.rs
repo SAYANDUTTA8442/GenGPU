@@ -4,11 +4,13 @@
 //! backend-specific implementations. Native backend handles and API types
 //! must remain behind the crate's public abstractions.
 
+mod allocation;
 mod context;
 mod driver;
 
 /// NVIDIA-specific driver backend.
 pub mod nvidia;
 
+pub use allocation::{DeviceAddress, DeviceAllocation};
 pub use context::{Context, CurrentContextGuard};
 pub use driver::Driver;
