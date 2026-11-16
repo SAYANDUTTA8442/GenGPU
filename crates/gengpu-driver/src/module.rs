@@ -154,7 +154,7 @@ mod tests {
     #[test]
     fn rejects_function_name_with_embedded_nul() {
         assert_eq!(
-            super::validate_function_name("kernel\\0suffix")
+            super::validate_function_name("kernel\0suffix")
                 .unwrap_err()
                 .kind(),
             ErrorKind::InvalidArgument
