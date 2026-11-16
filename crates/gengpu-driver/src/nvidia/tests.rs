@@ -1686,3 +1686,24 @@ fn module_load_and_function_lookup_preserve_an_existing_current_context() {
     previous_guard.finish().unwrap();
     assert!(api.state.lock().unwrap().context_stack.is_empty());
 }
+
+#[test]
+fn invalid_ptx_is_rejected_before_nvidia_context_activation() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let empty = context
+        .load_ptx("")
+        .err()
+        .expect("empty PTX must be rejected");
+    let embedded_nul = context
+        .load_ptx(".version 7.0\\0.target sm_50")
+        .err()
+        .expect("embedded NUL must be rejected");
+
+    assert_eq!(empty.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(embedded_nul.kind(), ErrorKind::InvalidArgument);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_load_calls, 0);
+    assert_eq!(state.push_calls, 0);
+}
