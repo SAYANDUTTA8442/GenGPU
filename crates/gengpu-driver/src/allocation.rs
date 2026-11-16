@@ -19,11 +19,19 @@ impl DeviceAddress {
         self.0
     }
 
-    // Used by concrete backend implementations introduced in PH1-005C.
-    #[allow(dead_code)]
     pub(crate) fn from_raw(value: u64) -> Self {
         Self(value)
     }
+}
+
+/// Result of a backend cleanup attempt.
+///
+/// A backend can report an error after the resource has already been
+/// irreversibly released (for example, when restoring thread context fails).
+/// Such a result must disarm the cleanup callback to prevent double-free.
+pub(crate) enum CleanupOutcome {
+    Released(Result<()>),
+    Retain(Error),
 }
 
 /// An owned allocation in a GPU device's memory space.
@@ -35,7 +43,7 @@ pub struct DeviceAllocation {
     device_id: DeviceId,
     address: DeviceAddress,
     size_bytes: usize,
-    cleanup: Option<Box<dyn FnMut() -> Result<()> + Send + 'static>>,
+    cleanup: Option<Box<dyn FnMut() -> CleanupOutcome + Send + 'static>>,
     _owner: Arc<dyn Any + Send + Sync>,
 }
 
@@ -44,14 +52,12 @@ impl DeviceAllocation {
     ///
     /// This constructor is crate-private: callers obtain allocations only
     /// through Context::allocate.
-    // Used by concrete backend implementations introduced in PH1-005C.
-    #[allow(dead_code)]
     pub(crate) fn new(
         device_id: DeviceId,
         address: DeviceAddress,
         size_bytes: usize,
         owner: Arc<dyn Any + Send + Sync>,
-        cleanup: impl FnMut() -> Result<()> + Send + 'static,
+        cleanup: impl FnMut() -> CleanupOutcome + Send + 'static,
     ) -> Result<Self> {
         if size_bytes == 0 {
             return Err(Error::new(
@@ -86,19 +92,27 @@ impl DeviceAllocation {
 
     /// Releases this allocation and reports backend cleanup failures.
     ///
-    /// If cleanup fails, ownership state is retained so the caller may retry.
-    /// Calling this method after a successful deallocation is idempotent.
+    /// If the resource remains live after cleanup fails, ownership state is
+    /// retained so the caller may retry. If the resource was released but a
+    /// later restoration step failed, the error is reported and the callback
+    /// is disarmed to prevent a second release attempt.
+    ///
+    /// Calling this method after a completed deallocation is idempotent.
     pub fn deallocate(&mut self) -> Result<()> {
         let Some(cleanup) = self.cleanup.as_mut() else {
             return Ok(());
         };
 
-        cleanup()?;
-        self.cleanup = None;
-        Ok(())
+        match cleanup() {
+            CleanupOutcome::Released(result) => {
+                self.cleanup = None;
+                result
+            }
+            CleanupOutcome::Retain(error) => Err(error),
+        }
     }
 
-    /// Returns whether this allocation has been successfully deallocated.
+    /// Returns whether this allocation's device resource has been released.
     pub fn is_deallocated(&self) -> bool {
         self.cleanup.is_none()
     }
@@ -121,10 +135,10 @@ mod tests {
 
     use gengpu_core::{DeviceId, Error, ErrorKind};
 
-    use super::{DeviceAddress, DeviceAllocation};
+    use super::{CleanupOutcome, DeviceAddress, DeviceAllocation};
 
     fn allocation(
-        cleanup: impl FnMut() -> gengpu_core::Result<()> + Send + 'static,
+        cleanup: impl FnMut() -> CleanupOutcome + Send + 'static,
     ) -> DeviceAllocation {
         DeviceAllocation::new(
             DeviceId::new(3),
@@ -138,7 +152,7 @@ mod tests {
 
     #[test]
     fn exposes_device_metadata_without_exposing_a_host_pointer() {
-        let allocation = allocation(|| Ok(()));
+        let allocation = allocation(|| CleanupOutcome::Released(Ok(())));
 
         assert_eq!(allocation.device_id(), DeviceId::new(3));
         assert_eq!(allocation.device_address().as_u64(), 0xCAFE);
@@ -153,7 +167,7 @@ mod tests {
             DeviceAddress::from_raw(1),
             0,
             Arc::new(()),
-            || Ok(()),
+            || CleanupOutcome::Released(Ok(())),
         );
 
         assert_eq!(
@@ -168,7 +182,7 @@ mod tests {
         let observed = Arc::clone(&calls);
         let mut allocation = allocation(move || {
             *observed.lock().unwrap() += 1;
-            Ok(())
+            CleanupOutcome::Released(Ok(()))
         });
 
         allocation.deallocate().unwrap();
@@ -186,9 +200,12 @@ mod tests {
             let mut calls = observed.lock().unwrap();
             *calls += 1;
             if *calls == 1 {
-                Err(Error::new(ErrorKind::Driver, "simulated free failure"))
+                CleanupOutcome::Retain(Error::new(
+                    ErrorKind::Driver,
+                    "simulated free failure",
+                ))
             } else {
-                Ok(())
+                CleanupOutcome::Released(Ok(()))
             }
         });
 
@@ -204,12 +221,33 @@ mod tests {
     }
 
     #[test]
+    fn released_resource_disarms_cleanup_even_when_restoration_reports_error() {
+        let calls = Arc::new(Mutex::new(0));
+        let observed = Arc::clone(&calls);
+        let mut allocation = allocation(move || {
+            *observed.lock().unwrap() += 1;
+            CleanupOutcome::Released(Err(Error::new(
+                ErrorKind::Driver,
+                "simulated context restoration failure",
+            )))
+        });
+
+        assert_eq!(
+            allocation.deallocate().unwrap_err().kind(),
+            ErrorKind::Driver
+        );
+        assert!(allocation.is_deallocated());
+        allocation.deallocate().unwrap();
+        assert_eq!(*calls.lock().unwrap(), 1);
+    }
+
+    #[test]
     fn drop_attempts_best_effort_cleanup_once() {
         let calls = Arc::new(Mutex::new(0));
         let observed = Arc::clone(&calls);
         drop(allocation(move || {
             *observed.lock().unwrap() += 1;
-            Ok(())
+            CleanupOutcome::Released(Ok(()))
         }));
 
         assert_eq!(*calls.lock().unwrap(), 1);
@@ -221,7 +259,10 @@ mod tests {
         let observed = Arc::clone(&calls);
         drop(allocation(move || {
             *observed.lock().unwrap() += 1;
-            Err(Error::new(ErrorKind::Driver, "simulated free failure"))
+            CleanupOutcome::Retain(Error::new(
+                ErrorKind::Driver,
+                "simulated free failure",
+            ))
         }));
 
         assert_eq!(*calls.lock().unwrap(), 1);
