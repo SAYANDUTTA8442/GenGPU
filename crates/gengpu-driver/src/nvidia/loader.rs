@@ -25,6 +25,8 @@ type CuCtxDestroy = unsafe extern "C" fn(context: CuContext) -> CuResult;
 type CuCtxPopCurrent = unsafe extern "C" fn(context: *mut CuContext) -> CuResult;
 type CuCtxPushCurrent = unsafe extern "C" fn(context: CuContext) -> CuResult;
 type CuCtxSynchronize = unsafe extern "C" fn() -> CuResult;
+type CuMemcpyHtoD = unsafe extern "C" fn(destination: u64, source: *const c_void, bytesize: usize) -> CuResult;
+type CuMemcpyDtoH = unsafe extern "C" fn(destination: *mut c_void, source: u64, bytesize: usize) -> CuResult;
 type CuMemAlloc = unsafe extern "C" fn(address: *mut u64, bytesize: usize) -> CuResult;
 type CuMemFree = unsafe extern "C" fn(address: u64) -> CuResult;
 type CuGetErrorName = unsafe extern "C" fn(error: CuResult, name: *mut *const c_char) -> CuResult;
@@ -47,6 +49,8 @@ struct DynamicCudaApi {
     cu_ctx_pop_current: CuCtxPopCurrent,
     cu_ctx_push_current: CuCtxPushCurrent,
     cu_ctx_synchronize: CuCtxSynchronize,
+    cu_memcpy_htod: CuMemcpyHtoD,
+    cu_memcpy_dtoh: CuMemcpyDtoH,
     cu_mem_alloc: CuMemAlloc,
     cu_mem_free: CuMemFree,
     cu_get_error_name: Option<CuGetErrorName>,
@@ -106,6 +110,8 @@ impl DynamicCudaApi {
             cu_ctx_pop_current,
             cu_ctx_push_current,
             cu_ctx_synchronize,
+            cu_memcpy_htod,
+            cu_memcpy_dtoh,
             cu_mem_alloc,
             cu_mem_free,
             cu_get_error_name,
@@ -278,6 +284,22 @@ impl CudaApi for DynamicCudaApi {
 
     fn synchronize(&self) -> std::result::Result<(), CudaError> {
         self.check(unsafe { (self.cu_ctx_synchronize)() })
+    }
+
+    fn copy_to_device(&self, address: u64, source: &[u8]) -> std::result::Result<(), CudaError> {
+        self.check(unsafe {
+            (self.cu_memcpy_htod)(address, source.as_ptr().cast(), source.len())
+        })
+    }
+
+    fn copy_from_device(
+        &self,
+        address: u64,
+        destination: &mut [u8],
+    ) -> std::result::Result<(), CudaError> {
+        self.check(unsafe {
+            (self.cu_memcpy_dtoh)(destination.as_mut_ptr().cast(), address, destination.len())
+        })
     }
 
     fn allocate_memory(&self, size_bytes: usize) -> std::result::Result<u64, CudaError> {
