@@ -1069,3 +1069,191 @@ fn failed_cleanup_of_unreturned_allocation_is_tracked_by_context() {
     assert_eq!(state.freed_addresses.len(), 1);
     assert_eq!(state.context_destroy_calls, 1);
 }
+
+
+#[test]
+fn host_device_transfers_round_trip_bytes_with_offsets() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(16).unwrap();
+
+    context
+        .copy_to_device(&mut allocation, 3, &[10, 20, 30, 40])
+        .unwrap();
+    let mut received = [0_u8; 4];
+    context
+        .copy_from_device(&mut allocation, 3, &mut received)
+        .unwrap();
+
+    assert_eq!(received, [10, 20, 30, 40]);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.copy_to_device_calls, 1);
+    assert_eq!(state.copy_from_device_calls, 1);
+    assert_eq!(state.synchronize_calls, 2);
+    assert_eq!(state.push_calls, 3); // allocation plus two transfers
+    assert_eq!(state.pop_calls, 3);
+    assert!(state.context_stack.is_empty());
+}
+
+#[test]
+fn transfer_rejects_allocation_from_another_context_on_the_same_device() {
+    let (driver, api) = initialized_driver();
+    let first_context = driver.create_context(DeviceId::new(0)).unwrap();
+    let second_context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = first_context.allocate(16).unwrap();
+
+    let error = second_context
+        .copy_to_device(&mut allocation, 0, &[1, 2, 3])
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.copy_to_device_calls, 0);
+    assert_eq!(state.synchronize_calls, 0);
+    assert_eq!(state.push_calls, 2); // allocation only
+}
+
+#[test]
+fn transfer_rejects_out_of_bounds_and_overflow_before_cuda_copy() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(8).unwrap();
+
+    let out_of_bounds = context
+        .copy_to_device(&mut allocation, 7, &[1, 2])
+        .unwrap_err();
+    let overflow = context
+        .copy_to_device(&mut allocation, usize::MAX, &[1])
+        .unwrap_err();
+
+    assert_eq!(out_of_bounds.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(overflow.kind(), ErrorKind::InvalidArgument);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.copy_to_device_calls, 0);
+    assert_eq!(state.synchronize_calls, 0);
+    assert_eq!(state.push_calls, 1); // allocation only
+}
+
+#[test]
+fn zero_length_transfers_validate_ranges_without_cuda_calls() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(8).unwrap();
+
+    context.copy_to_device(&mut allocation, 8, &[]).unwrap();
+    let mut empty = [];
+    context
+        .copy_from_device(&mut allocation, 8, &mut empty)
+        .unwrap();
+
+    let invalid = context
+        .copy_to_device(&mut allocation, 9, &[])
+        .unwrap_err();
+    assert_eq!(invalid.kind(), ErrorKind::InvalidArgument);
+
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.copy_to_device_calls, 0);
+    assert_eq!(state.copy_from_device_calls, 0);
+    assert_eq!(state.synchronize_calls, 0);
+    assert_eq!(state.push_calls, 1); // allocation only
+    assert_eq!(state.pop_calls, 1);
+}
+
+#[test]
+fn failed_native_copy_is_reported_and_context_is_restored_without_sync() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        copy_to_device_error: Some(CudaError::new(999)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(8).unwrap();
+
+    let error = context
+        .copy_to_device(&mut allocation, 0, &[1, 2, 3])
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("cuMemcpyHtoD_v2"));
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.copy_to_device_calls, 1);
+    assert_eq!(state.synchronize_calls, 0);
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.pop_calls, 2); // allocation and failed transfer restoration
+}
+
+#[test]
+fn transfer_synchronization_failure_is_reported_after_copy_and_context_restore() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        synchronize_error: Some(CudaError::new(999)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(8).unwrap();
+
+    let error = context
+        .copy_from_device(&mut allocation, 0, &mut [0_u8; 4])
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("cuCtxSynchronize"));
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.copy_from_device_calls, 1);
+    assert_eq!(state.synchronize_calls, 1);
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.pop_calls, 2);
+}
+
+#[test]
+fn transfer_reports_context_restoration_failure_after_retry() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        pop_error: Some(CudaError::new(709)),
+        pop_error_remaining: 1,
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(8).unwrap();
+
+    let error = context
+        .copy_to_device(&mut allocation, 0, &[1, 2, 3, 4])
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("cuCtxPopCurrent_v2"));
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.copy_to_device_calls, 1);
+    assert_eq!(state.synchronize_calls, 1);
+    assert_eq!(state.pop_calls, 3); // allocation pop plus failed and retry pops
+    assert!(state.context_stack.is_empty());
+}
+
+#[test]
+fn deallocated_memory_cannot_be_used_for_transfers() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut allocation = context.allocate(8).unwrap();
+    allocation.deallocate().unwrap();
+
+    let error = context
+        .copy_to_device(&mut allocation, 0, &[1])
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ErrorKind::InvalidState);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.copy_to_device_calls, 0);
+    assert_eq!(state.synchronize_calls, 0);
+}
