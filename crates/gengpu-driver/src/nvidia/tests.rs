@@ -1319,3 +1319,207 @@ fn transfer_rejects_device_address_overflow_before_cuda_copy() {
     assert_eq!(state.copy_to_device_calls, 0);
     assert_eq!(state.synchronize_calls, 0);
 }
+
+#[test]
+fn ptx_module_loads_inside_and_restores_owning_context() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+
+    {
+        let state = api.state.lock().unwrap();
+        assert_eq!(state.module_load_calls, 1);
+        assert_eq!(state.loaded_ptx.as_deref(), Some(".version 7.0\\n.target sm_50"));
+        assert!(state.context_stack.is_empty());
+        assert_eq!(state.push_calls, 1);
+        assert_eq!(state.pop_calls, 1);
+    }
+
+    module.unload().unwrap();
+    assert_eq!(api.state.lock().unwrap().module_unload_calls, 1);
+}
+
+#[test]
+fn ptx_module_load_failure_restores_context_and_translates_error() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        module_load_error: Some(CudaError::new(200)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+
+    let error = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .err()
+        .expect("module load failure must be returned");
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("cuModuleLoadData"));
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_load_calls, 1);
+    assert_eq!(state.module_unload_calls, 0);
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.push_calls, 1);
+    assert_eq!(state.pop_calls, 1);
+}
+
+#[test]
+fn ptx_module_is_cleaned_up_when_context_restoration_fails_after_load() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    {
+        let mut state = api.state.lock().unwrap();
+        state.pop_error = Some(CudaError::new(709));
+        state.pop_error_remaining = 1;
+    }
+
+    let error = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .err()
+        .expect("context restoration failure must be returned");
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.module_load_calls, 1);
+    assert_eq!(state.module_unload_calls, 1);
+    assert_eq!(state.push_calls, 2);
+    assert_eq!(state.pop_calls, 3);
+    assert!(state.context_stack.is_empty());
+}
+
+#[test]
+fn module_function_lookup_returns_an_opaque_backend_handle() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let mut module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+
+    let function = module.get_function("kernel_entry").unwrap();
+    assert_eq!(
+        function
+            .backend_handle::<super::module::CudaFunctionHandle>()
+            .map(|handle| handle.0),
+        Some(30_001)
+    );
+    assert_eq!(
+        api.state.lock().unwrap().looked_up_function.as_deref(),
+        Some("kernel_entry")
+    );
+    drop(function);
+
+    module.unload().unwrap();
+}
+
+#[test]
+fn module_function_lookup_rejects_invalid_names_before_cuda_call() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+
+    let empty = module
+        .get_function("")
+        .err()
+        .expect("empty function name must be rejected");
+    let embedded_nul = module
+        .get_function("kernel\\0suffix")
+        .err()
+        .expect("embedded NUL must be rejected");
+
+    assert_eq!(empty.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(embedded_nul.kind(), ErrorKind::InvalidArgument);
+    assert_eq!(api.state.lock().unwrap().function_lookup_calls, 0);
+}
+
+#[test]
+fn missing_module_function_maps_cuda_not_found_to_gen_gpu_not_found() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        function_lookup_error: Some(CudaError::new(500)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+
+    let error = module
+        .get_function("missing_kernel")
+        .err()
+        .expect("missing kernel function must return NotFound");
+
+    assert_eq!(error.kind(), ErrorKind::NotFound);
+    assert!(error.message().contains("missing_kernel"));
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.function_lookup_calls, 1);
+    assert!(state.context_stack.is_empty());
+}
+
+#[test]
+fn module_function_lookup_preserves_driver_errors_and_restores_context() {
+    let (driver, api) = driver_with_mock(MockState {
+        devices: vec![RawDeviceInfo {
+            name: String::from("GPU A"),
+            total_memory_bytes: 1024,
+        }],
+        function_lookup_error: Some(CudaError::new(700)),
+        ..MockState::default()
+    });
+    driver.initialize().unwrap();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+
+    let error = module
+        .get_function("kernel_entry")
+        .err()
+        .expect("native function lookup failure must be returned");
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("cuModuleGetFunction"));
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.function_lookup_calls, 1);
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.push_calls, 2);
+    assert_eq!(state.pop_calls, 2);
+}
+
+#[test]
+fn function_lookup_reports_context_restoration_failure_after_retry() {
+    let (driver, api) = initialized_driver();
+    let context = driver.create_context(DeviceId::new(0)).unwrap();
+    let module = context
+        .load_ptx(".version 7.0\\n.target sm_50")
+        .unwrap();
+    {
+        let mut state = api.state.lock().unwrap();
+        state.pop_error = Some(CudaError::new(709));
+        state.pop_error_remaining = 1;
+    }
+
+    let error = module
+        .get_function("kernel_entry")
+        .err()
+        .expect("restoration failure must be returned");
+
+    assert_eq!(error.kind(), ErrorKind::Driver);
+    assert!(error.message().contains("cuCtxPopCurrent_v2"));
+    let state = api.state.lock().unwrap();
+    assert_eq!(state.function_lookup_calls, 1);
+    assert!(state.context_stack.is_empty());
+    assert_eq!(state.push_calls, 2);
+    assert_eq!(state.pop_calls, 3);
+}
