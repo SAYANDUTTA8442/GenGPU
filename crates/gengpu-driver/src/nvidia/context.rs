@@ -353,10 +353,3 @@ fn combine_errors(primary: Error, secondary: Error, operation: &str) -> Error {
     )
 }
 
-impl Drop for NvidiaContext {
-    fn drop(&mut self) {
-        // ContextInner is destroyed only after the last allocation releases
-        // its retained Arc. This wrapper therefore has no native handle to
-        // destroy directly.
-    }
-}
