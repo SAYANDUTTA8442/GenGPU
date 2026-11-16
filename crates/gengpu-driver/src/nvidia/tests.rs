@@ -962,7 +962,7 @@ fn context_close_retains_orphan_after_free_failure_for_later_retry() {
 #[test]
 fn dropping_context_releases_orphaned_allocations_before_destroying_context() {
     let (driver, api) = initialized_driver();
-    let allocation = {
+    let context = {
         let context = driver.create_context(DeviceId::new(0)).unwrap();
         let allocation = context.allocate(512).unwrap();
         api.state.lock().unwrap().free_error = Some(CudaError::new(709));
@@ -970,7 +970,7 @@ fn dropping_context_releases_orphaned_allocations_before_destroying_context() {
         context
     };
 
-    drop(allocation);
+    drop(context);
 
     let state = api.state.lock().unwrap();
     // The context Drop path retries the orphan free, then destroys the
