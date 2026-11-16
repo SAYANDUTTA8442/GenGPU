@@ -7,7 +7,6 @@ use gengpu_core::{Error, ErrorKind, Result};
 
 use crate::{KernelFunction, Module};
 
-use super::api::CudaApi;
 use super::context::{combine_errors, pop_expected_context_retry, ContextInner};
 use super::driver::cuda_error;
 
