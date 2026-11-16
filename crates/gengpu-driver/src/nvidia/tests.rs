@@ -1590,7 +1590,7 @@ fn module_retains_context_after_public_context_wrapper_is_dropped() {
     let mut module = {
         let context = driver.create_context(DeviceId::new(0)).unwrap();
         context
-            .load_ptx(".version 7.0\\n.target sm_50")
+            .load_ptx(".version 7.0\n.target sm_50")
             .unwrap()
     };
 
@@ -1618,7 +1618,7 @@ fn failed_explicit_module_unload_retains_handle_for_retry() {
     driver.initialize().unwrap();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let mut module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
 
     let error = module.unload().unwrap_err();
@@ -1639,7 +1639,7 @@ fn successful_module_unload_is_not_repeated_after_context_restore_failure() {
     let (driver, api) = initialized_driver();
     let context = driver.create_context(DeviceId::new(0)).unwrap();
     let mut module = context
-        .load_ptx(".version 7.0\\n.target sm_50")
+        .load_ptx(".version 7.0\n.target sm_50")
         .unwrap();
     {
         let mut state = api.state.lock().unwrap();
