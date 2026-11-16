@@ -4,7 +4,9 @@
 
 Approved design; driver and context contracts introduced in PH1-002 and
 PH1-004B. NVIDIA context creation and destruction implemented in PH1-004C.
-NVIDIA scoped context activation and synchronization implemented in PH1-004D.\nBackend-neutral device allocation ownership abstractions introduced in PH1-005B.
+NVIDIA scoped context activation and synchronization implemented in PH1-004D.
+Backend-neutral device allocation ownership abstractions introduced in PH1-005B.
+NVIDIA device allocation and deallocation implemented in PH1-005C.
 
 ## Purpose
 
@@ -53,7 +55,8 @@ The driver crate exposes:
 - `Driver::create_context(&self, DeviceId) -> Result<Box<dyn Context>>`
 - `Context::device_id(&self) -> DeviceId`
 - `Context::make_current(&mut self) -> Result<CurrentContextGuard<'_>>`
-- `Context::allocate(&self, usize) -> Result<DeviceAllocation>`\n- `Context::synchronize(&mut self) -> Result<()>`
+- `Context::allocate(&self, usize) -> Result<DeviceAllocation>`
+- `Context::synchronize(&mut self) -> Result<()>`
 - `Context::close(&mut self) -> Result<()>`
 
 The contract uses only gengpu-core types and GenGPU-owned abstractions.
