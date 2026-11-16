@@ -10,8 +10,9 @@ NVIDIA device allocation and deallocation implemented in PH1-005C. The
 backend-neutral transfer contract was introduced in PH1-006B and
 synchronous NVIDIA transfers are implemented in PH1-006C. Backend-neutral
 PTX module contracts were introduced in PH1-007C1. NVIDIA PTX loading and
-function resolution are implemented in PH1-007C2; robust module orphan cleanup
-and hardware validation remain pending.
+function resolution are implemented in PH1-007C2. Context-owned orphan cleanup
+and live-module close restrictions are implemented in PH1-007C3; physical
+hardware validation remains pending.
 
 ## Purpose
 
@@ -106,7 +107,9 @@ PH1-007C3.
 - The NVIDIA context owns the native handle and a shared reference to the
   loaded CUDA API, so it can outlive the NvidiaDriver value.
 - Explicit close reports CUDA destruction errors and retains the handle on
-  failure so the caller can retry. Drop performs best-effort destruction.
+  failure so the caller can retry. It is rejected while caller-owned device
+  allocations or PTX modules remain live. Drop performs best-effort cleanup
+  of context-owned orphans before best-effort destruction.
 - A closed context rejects operations that require a live native context
   with ErrorKind::InvalidState.
 - NVIDIA make_current pushes the context onto the calling thread's CUDA
@@ -140,8 +143,22 @@ PH1-007C3.
   to ErrorKind::Driver with CUDA operation diagnostics.
 - Module loading and function lookup restore the caller's previous
   current-context stack. If loading succeeds but restoration fails, the
-  module is not returned; the owning context remains its reclamation boundary.
-  PH1-007C3 adds explicit orphan tracking for this path.
+  module is not returned; its handle is immediately registered as a
+  context-owned orphan for later cleanup.
+- Each successfully returned module increments the context's live-module
+  count. Explicit context close is rejected while that count is nonzero.
+- Explicit unload decrements the count only after native unload succeeds.
+  If native unload succeeds but context restoration fails, the module is
+  marked released and is never unloaded twice.
+- If module Drop cannot unload the native module, it transfers the handle to
+  the context-owned orphan registry before decrementing the live-module count.
+- Explicit context close retries orphaned module unloads before orphaned
+  allocation frees. Failed unloads remain registered for a later close
+  attempt. If unload succeeds but context restoration fails, the orphan is
+  removed (to prevent a second unload) and the restoration error is returned;
+  a later close can destroy the context.
+- Final ContextInner drop also makes a best-effort retry of orphaned module
+  unloads before destroying the native context.
 - A KernelFunction stores an opaque backend handle and carries a Rust borrow
   tied to its Module. The function handle therefore cannot outlive the module,
   and the module cannot be mutably unloaded while a function borrow is live.
