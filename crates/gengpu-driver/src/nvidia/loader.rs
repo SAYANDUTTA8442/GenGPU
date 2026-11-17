@@ -81,6 +81,7 @@ struct DynamicCudaApi {
     cu_module_load_data: CuModuleLoadData,
     cu_module_unload: CuModuleUnload,
     cu_module_get_function: CuModuleGetFunction,
+    #[allow(dead_code)] // Read by the NVIDIA launch path in PH1-007D3.3.
     cu_launch_kernel: CuLaunchKernel,
     cu_get_error_name: Option<CuGetErrorName>,
     cu_get_error_string: Option<CuGetErrorString>,
