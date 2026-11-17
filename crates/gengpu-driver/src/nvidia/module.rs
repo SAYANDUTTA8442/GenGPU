@@ -17,13 +17,19 @@ const CUDA_ERROR_NOT_FOUND: i32 = 500;
 /// Keeping the exact ContextInner alive makes context identity available for
 /// launch validation and prevents the native context from being destroyed
 /// while a function handle still exists.
-#[allow(dead_code, reason = "Native handle fields are consumed by PH1-007D3.3 launch implementation")]
+#[allow(
+    dead_code,
+    reason = "Native handle fields are consumed by PH1-007D3.3 launch implementation"
+)]
 pub(super) struct CudaFunctionHandle {
     raw: usize,
     owner: Arc<ContextInner>,
 }
 
-#[allow(dead_code, reason = "Accessors are consumed by PH1-007D3.3 launch implementation")]
+#[allow(
+    dead_code,
+    reason = "Accessors are consumed by PH1-007D3.3 launch implementation"
+)]
 impl CudaFunctionHandle {
     pub(super) fn new(raw: usize, owner: Arc<ContextInner>) -> Self {
         Self { raw, owner }
