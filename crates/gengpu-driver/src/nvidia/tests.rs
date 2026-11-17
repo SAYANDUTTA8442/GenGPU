@@ -10,6 +10,8 @@ use crate::Driver;
 use super::api::{CudaApi, CudaError, CudaLoader, RawDeviceInfo};
 use super::driver::DriverState;
 use super::NvidiaDriver;
+use super::context::ContextInner;
+use super::module::CudaFunctionHandle;
 
 #[derive(Default)]
 struct MockState {
@@ -1419,7 +1421,7 @@ fn module_function_lookup_returns_an_opaque_backend_handle() {
     assert_eq!(
         function
             .backend_handle::<super::module::CudaFunctionHandle>()
-            .map(|handle| handle.0),
+            .map(|handle| handle.raw()),
         Some(30_001)
     );
     assert_eq!(
@@ -1429,6 +1431,33 @@ fn module_function_lookup_returns_an_opaque_backend_handle() {
     drop(function);
 
     module.unload().unwrap();
+}
+
+#[test]
+fn cuda_function_handle_requires_exact_context_identity() {
+    let api: Arc<dyn CudaApi> = Arc::new(MockCudaApi::default());
+    let owner = Arc::new(ContextInner::new(Arc::clone(&api), 10_000));
+    let same_owner = Arc::clone(&owner);
+    let other_context = Arc::new(ContextInner::new(api, 10_001));
+    let function = CudaFunctionHandle::new(30_001, Arc::clone(&owner));
+
+    assert!(function.belongs_to(&owner));
+    assert!(function.belongs_to(&same_owner));
+    assert!(!function.belongs_to(&other_context));
+}
+
+#[test]
+fn cuda_function_handle_retains_owning_context_until_handle_is_dropped() {
+    let api: Arc<dyn CudaApi> = Arc::new(MockCudaApi::default());
+    let owner = Arc::new(ContextInner::new(api, 10_000));
+    let weak_owner = Arc::downgrade(&owner);
+    let function = CudaFunctionHandle::new(30_001, Arc::clone(&owner));
+
+    drop(owner);
+    assert!(weak_owner.upgrade().is_some());
+
+    drop(function);
+    assert!(weak_owner.upgrade().is_none());
 }
 
 #[test]
