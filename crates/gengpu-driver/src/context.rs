@@ -206,9 +206,7 @@ mod tests {
     use gengpu_core::{DeviceId, Error, ErrorKind, Result};
 
     use crate::allocation::CleanupOutcome;
-    use crate::{
-        DeviceAddress, DeviceAllocation, KernelArg, KernelFunction, LaunchConfig, Module,
-    };
+    use crate::{DeviceAddress, DeviceAllocation, KernelArg, KernelFunction, LaunchConfig, Module};
 
     use super::{Context, CurrentContextGuard};
 
