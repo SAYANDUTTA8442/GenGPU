@@ -127,8 +127,7 @@ impl DynamicCudaApi {
         let cu_module_unload = required_symbol::<CuModuleUnload>(&library, b"cuModuleUnload\0")?;
         let cu_module_get_function =
             required_symbol::<CuModuleGetFunction>(&library, b"cuModuleGetFunction\0")?;
-        let cu_launch_kernel =
-            required_symbol::<CuLaunchKernel>(&library, b"cuLaunchKernel\0")?;
+        let cu_launch_kernel = required_symbol::<CuLaunchKernel>(&library, b"cuLaunchKernel\0")?;
 
         // Error-description helpers improve diagnostics but are not required
         // for correct operation of the backend.
