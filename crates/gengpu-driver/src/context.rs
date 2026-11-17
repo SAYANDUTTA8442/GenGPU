@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use gengpu_core::{DeviceId, Error, ErrorKind, Result};
 
-use crate::{DeviceAllocation, Module};
+use crate::{DeviceAllocation, KernelArg, KernelFunction, LaunchConfig, Module};
 
 /// An owned execution context associated with one logical GPU device.
 ///
@@ -87,6 +87,39 @@ pub trait Context: Send {
         Err(Error::new(
             ErrorKind::Unsupported,
             "this driver backend does not implement PTX module loading",
+        ))
+    }
+
+    /// Launches a kernel function owned by this exact execution context.
+    ///
+    /// The function's parent module and every device-pointer argument must
+    /// belong to this exact context; matching logical device identifiers are
+    /// insufficient. Implementations must reject ownership mismatches before
+    /// submitting work to the backend.
+    ///
+    /// The operation is synchronous: after a successful launch submission,
+    /// implementations must wait for the context's work to complete before
+    /// returning success. Argument storage and device allocations remain
+    /// borrowed for the complete operation, including synchronization.
+    ///
+    /// Argument order and representation must match the PTX function's
+    /// parameter declarations. This API cannot verify arbitrary PTX
+    /// signatures because compiler-generated parameter metadata is not yet
+    /// available. Device-specific grid, block, and shared-memory limits are
+    /// validated by the backend/driver.
+    ///
+    /// Backends that do not yet implement kernel launch return
+    /// ErrorKind::Unsupported.
+    fn launch(
+        &self,
+        function: &KernelFunction<'_>,
+        config: LaunchConfig,
+        args: &[KernelArg<'_>],
+    ) -> Result<()> {
+        let _ = (function, config, args);
+        Err(Error::new(
+            ErrorKind::Unsupported,
+            "this driver backend does not implement kernel launch",
         ))
     }
 
@@ -173,9 +206,23 @@ mod tests {
     use gengpu_core::{DeviceId, Error, ErrorKind, Result};
 
     use crate::allocation::CleanupOutcome;
-    use crate::{DeviceAddress, DeviceAllocation};
+    use crate::{
+        DeviceAddress, DeviceAllocation, KernelArg, KernelFunction, LaunchConfig, Module,
+    };
 
     use super::{Context, CurrentContextGuard};
+
+    struct StubModule;
+
+    impl Module for StubModule {
+        fn get_function<'module>(&'module self, _name: &str) -> Result<KernelFunction<'module>> {
+            Ok(KernelFunction::from_backend_handle(self, 7_u64))
+        }
+
+        fn unload(&mut self) -> Result<()> {
+            Ok(())
+        }
+    }
 
     struct StubContext;
 
@@ -258,6 +305,49 @@ mod tests {
             .expect("embedded NUL must be rejected");
 
         assert_eq!(error.kind(), ErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn kernel_launch_defaults_to_unsupported_for_valid_request() {
+        let context = StubContext;
+        let module = StubModule;
+        let function = module.get_function("entry").unwrap();
+        let config = LaunchConfig::new(
+            crate::Dim3::new(1, 1, 1).unwrap(),
+            crate::Dim3::new(32, 1, 1).unwrap(),
+            0,
+        )
+        .unwrap();
+
+        let error = context
+            .launch(&function, config, &[])
+            .expect_err("stub backend must not claim to support kernel launch");
+
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
+    }
+
+    #[test]
+    fn kernel_launch_api_accepts_scalar_and_device_pointer_arguments() {
+        let context = StubContext;
+        let module = StubModule;
+        let function = module.get_function("entry").unwrap();
+        let config = LaunchConfig::new(
+            crate::Dim3::new(1, 1, 1).unwrap(),
+            crate::Dim3::new(32, 1, 1).unwrap(),
+            0,
+        )
+        .unwrap();
+        let scalar = 42_u32;
+        let scalar_argument = KernelArg::scalar(&scalar);
+        let mut allocation = test_allocation();
+        let pointer_argument = KernelArg::device_ptr(&mut allocation).unwrap();
+        let arguments = [scalar_argument, pointer_argument];
+
+        let error = context
+            .launch(&function, config, &arguments)
+            .expect_err("stub backend must report launch as unsupported");
+
+        assert_eq!(error.kind(), ErrorKind::Unsupported);
     }
 
     #[test]
