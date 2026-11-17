@@ -52,6 +52,7 @@ pub(super) trait CudaApi: Send + Sync {
     fn load_module(&self, ptx: &CStr) -> std::result::Result<usize, CudaError>;
     fn unload_module(&self, module: usize) -> std::result::Result<(), CudaError>;
     fn get_function(&self, module: usize, name: &CStr) -> std::result::Result<usize, CudaError>;
+    #[allow(dead_code)] // Used by the NVIDIA launch path in PH1-007D3.3.
     fn launch_kernel(
         &self,
         function: usize,
