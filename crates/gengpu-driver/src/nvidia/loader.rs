@@ -41,6 +41,19 @@ type CuModuleGetFunction = unsafe extern "C" fn(
     module: CuModule,
     name: *const c_char,
 ) -> CuResult;
+type CuLaunchKernel = unsafe extern "C" fn(
+    function: CuFunction,
+    grid_x: c_uint,
+    grid_y: c_uint,
+    grid_z: c_uint,
+    block_x: c_uint,
+    block_y: c_uint,
+    block_z: c_uint,
+    shared_mem_bytes: c_uint,
+    stream: *mut c_void,
+    kernel_params: *mut *mut c_void,
+    extra: *mut *mut c_void,
+) -> CuResult;
 type CuGetErrorName = unsafe extern "C" fn(error: CuResult, name: *mut *const c_char) -> CuResult;
 type CuGetErrorString =
     unsafe extern "C" fn(error: CuResult, description: *mut *const c_char) -> CuResult;
@@ -68,6 +81,7 @@ struct DynamicCudaApi {
     cu_module_load_data: CuModuleLoadData,
     cu_module_unload: CuModuleUnload,
     cu_module_get_function: CuModuleGetFunction,
+    cu_launch_kernel: CuLaunchKernel,
     cu_get_error_name: Option<CuGetErrorName>,
     cu_get_error_string: Option<CuGetErrorString>,
 }
@@ -112,6 +126,8 @@ impl DynamicCudaApi {
         let cu_module_unload = required_symbol::<CuModuleUnload>(&library, b"cuModuleUnload\0")?;
         let cu_module_get_function =
             required_symbol::<CuModuleGetFunction>(&library, b"cuModuleGetFunction\0")?;
+        let cu_launch_kernel =
+            required_symbol::<CuLaunchKernel>(&library, b"cuLaunchKernel\0")?;
 
         // Error-description helpers improve diagnostics but are not required
         // for correct operation of the backend.
@@ -139,6 +155,7 @@ impl DynamicCudaApi {
             cu_module_load_data,
             cu_module_unload,
             cu_module_get_function,
+            cu_launch_kernel,
             cu_get_error_name,
             cu_get_error_string,
         })
@@ -365,6 +382,37 @@ impl CudaApi for DynamicCudaApi {
             return Err(error);
         }
         Ok(function as usize)
+    }
+
+    fn launch_kernel(
+        &self,
+        function: usize,
+        grid: [u32; 3],
+        block: [u32; 3],
+        shared_mem_bytes: u32,
+        kernel_params: &[*mut c_void],
+    ) -> std::result::Result<(), CudaError> {
+        let kernel_params = if kernel_params.is_empty() {
+            ptr::null_mut()
+        } else {
+            kernel_params.as_ptr().cast_mut()
+        };
+
+        self.check(unsafe {
+            (self.cu_launch_kernel)(
+                function as CuFunction,
+                grid[0],
+                grid[1],
+                grid[2],
+                block[0],
+                block[1],
+                block[2],
+                shared_mem_bytes,
+                ptr::null_mut(),
+                kernel_params,
+                ptr::null_mut(),
+            )
+        })
     }
 }
 
