@@ -257,6 +257,17 @@ impl CudaApi for MockCudaApi {
         }
         Ok(30_000 + state.function_lookup_calls)
     }
+
+    fn launch_kernel(
+        &self,
+        _function: usize,
+        _grid: [u32; 3],
+        _block: [u32; 3],
+        _shared_mem_bytes: u32,
+        _kernel_params: &[*mut std::ffi::c_void],
+    ) -> std::result::Result<(), CudaError> {
+        Ok(())
+    }
 }
 
 struct MockLoader {
