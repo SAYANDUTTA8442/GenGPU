@@ -8,10 +8,10 @@ use gengpu_core::{DeviceId, Error, ErrorKind};
 use crate::Driver;
 
 use super::api::{CudaApi, CudaError, CudaLoader, RawDeviceInfo};
-use super::driver::DriverState;
-use super::NvidiaDriver;
 use super::context::ContextInner;
+use super::driver::DriverState;
 use super::module::CudaFunctionHandle;
+use super::NvidiaDriver;
 
 #[derive(Default)]
 struct MockState {
