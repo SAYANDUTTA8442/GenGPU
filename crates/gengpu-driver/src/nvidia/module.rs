@@ -13,8 +13,28 @@ use super::driver::cuda_error;
 const CUDA_ERROR_NOT_FOUND: i32 = 500;
 
 /// Native CUDA function handle retained as an opaque KernelFunction payload.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) struct CudaFunctionHandle(pub usize);
+///
+/// Keeping the exact ContextInner alive makes context identity available for
+/// launch validation and prevents the native context from being destroyed
+/// while a function handle still exists.
+pub(super) struct CudaFunctionHandle {
+    raw: usize,
+    owner: Arc<ContextInner>,
+}
+
+impl CudaFunctionHandle {
+    pub(super) fn new(raw: usize, owner: Arc<ContextInner>) -> Self {
+        Self { raw, owner }
+    }
+
+    pub(super) fn raw(&self) -> usize {
+        self.raw
+    }
+
+    pub(super) fn belongs_to(&self, owner: &Arc<ContextInner>) -> bool {
+        Arc::ptr_eq(&self.owner, owner)
+    }
+}
 
 /// A PTX module owned by one NVIDIA context.
 ///
@@ -152,7 +172,7 @@ impl Module for NvidiaModule {
 
         Ok(KernelFunction::from_backend_handle(
             self,
-            CudaFunctionHandle(function_handle),
+            CudaFunctionHandle::new(function_handle, Arc::clone(&self.inner)),
         ))
     }
 
